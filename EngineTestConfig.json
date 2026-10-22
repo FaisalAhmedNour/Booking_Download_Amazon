@@ -1,0 +1,16 @@
+{
+    "port":4056,
+    "apiKey":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY2MTU1OWQ4ZWExNDAwMGU3YmY4M2M4OCIsInNlc3Npb24iOiJHcU9zclpuR1djRVdCdU11IiwiaWF0IjoxNzkxMTQ1NTQ3LCJleHAiOjE3OTE3NTAzNDd9.DLREExcVBWLrFA6tDbdjCiilJP0x-Wwz-Wi45pG5FCk",
+    "baseUrl":"https://uicommercial.com/api",
+    "initData": {
+        "excelFile":"C:\\Users\\faisa\\Downloads\\Bookings.xlsx",
+        "userName":"AMZ1599-0",
+        "password":"Epic@123456",
+        "settings":{
+            "companyCode": "589 - Amazon Multi Country Consolidation Thailand",
+            "downloadPoItems": true,
+            "downloadPdf": true,
+            "downloadDir": "C:\\Users\\faisa\\Downloads\\exp download"
+        }
+    }
+}

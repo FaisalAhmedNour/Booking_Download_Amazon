@@ -1,0 +1,22 @@
+{
+    "build_loc":"./built_module",
+    "build":{
+        "skip":false,
+        "frontend":{
+            "skip":false
+        },
+        "backend":{
+            "skip":false,
+            "include":[]
+        }
+    },
+    "compress":{
+        "skip":false
+    },
+    "hash":{
+        "skip":false
+    },
+    "publish":{
+        "skip":false
+    }
+}

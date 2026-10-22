@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+import '@fontsource/roboto/300.css';
+import '@fontsource/roboto/400.css';
+import '@fontsource/roboto/500.css';
+import '@fontsource/roboto/700.css'; 
+*/
+
+body::-webkit-scrollbar {
+    width: 0.5em;
+}
+
+body::-webkit-scrollbar-thumb {
+    background-color: #888;
+}
+
+body::-webkit-scrollbar-track {
+    background-color: #f8efef;
+}
+
+body {
+    font-family: 'Hedvig Letters Sans', sans-serif;
+}
+
+input {
+    background-color: #e8f0fe;
+}
+
+.editableInput {
+    background-color: #e8f0fe;
+}
+
+.fixedInput {
+    background-color: #bfbfbf;
+}
+
+.leftBar {
+    background-image: linear-gradient(to right, #0473EA, #FDDA5C);
+}
+
+.rightBar {
+    background-image: linear-gradient(to left, #0473EA, #FDDA5C);
+}
+
+/* print page margin */
+@page {
+    margin: .5cm;
+}
+
+/* ------------------Auto complete------------------- */
+/* Style for the input field */
+.react-autosuggest__input {
+    width: 100%;
+    /* Example width */
+    flex-grow: 1;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #b2b8c3;
+    border-radius: 5px;
+    padding: 2px 5px;
+}
+
+/* Style for each suggestion item */
+.suggestion-item {
+    padding: 1px 1px;
+    /* cursor: pointer; */
+    border: 1px 0px solid black;
+}
+
+/* Style for the selected suggestion item */
+.react-autosuggest__suggestion--highlighted {
+    background-color: #f0f0f0;
+    padding: 1px 1px;
+}
+
+/* ---------------------***------------------------ */
+
+
+.swal2-popup .swal2-confirm,
+.swal2-popup .swal2-deny,
+.swal2-popup .swal2-cancel {
+    background-color: #3085d6 !important;
+    /* default confirm color */
+    color: #fff !important;
+    border: none !important;
+    padding: 0.625em 1.6em !important;
+    font-size: 1em !important;
+    border-radius: 0.25em !important;
+    cursor: pointer !important;
+}
+
+.swal2-popup .swal2-confirm{
+    background-color: #3085d6 !important; /* blue */
+}
+.swal2-popup .swal2-deny{
+    background-color: #e64942 !important; /* red */
+}
+.swal2-popup .swal2-cancel {
+    background-color: #aaa !important; /* gray */
+}
+
+.MuiButton-root, .MuiButtonBase-root.MuiButton-root {
+    text-transform: capitalize !important;
+}

@@ -1,0 +1,27 @@
+{
+    "compilerOptions": {
+        "allowJs": true,
+        "module": "NodeNext",
+        "moduleResolution": "nodenext",
+        // "target": "ES6",
+        "outDir": "out",
+        "skipLibCheck": true,
+        "resolveJsonModule": true,
+        "strict": false
+        // "watch": true
+    },
+  "exclude": [
+    "node_modules", 
+    "**/*.spec.ts", 
+    "out/**",
+    "tsconfig.json"
+  ],
+  "include": [
+    "**/*.ts",
+    // "*.json",
+  ],
+  "files": [
+    "index.ts"
+    // "test.ts"
+  ]
+}

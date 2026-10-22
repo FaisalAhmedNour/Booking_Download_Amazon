@@ -1,0 +1,14 @@
+{
+    "Name":"BOOKING Download Amazon",
+    "id":"6acb996ef34bc7c0f8cc1d81",
+    "version":"2.0.0",
+    "type":"EXE",
+    "executable":"6acb996ef34bc7c0f8cc1d81.exe",
+    "requirements":[
+    	{
+        	"type":"File",
+        	"root":"Workers",
+        	"loc":["?p_id","6acb996ef34bc7c0f8cc1d81.exe"]
+    	}
+    ]
+}

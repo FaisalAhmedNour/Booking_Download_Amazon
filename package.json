@@ -1,0 +1,39 @@
+{
+  "name": "data_extraction_hnm",
+  "version": "1.0.5",
+  "description": "Initial test for NodeJs Based Module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.js",
+    "test:local": "npx tsx run_local_test.ts",
+    "test:status": "npx tsx run_local_test.ts --pull-status",
+    "test:download": "npx tsx run_local_test.ts --download-selected",
+    "mini": "webpack --config webpack.config.js",
+    "build": "pkg dist/built.js --targets node18-win-x64 -o ./build/6ac7964cf34bc7c0f89bf56a.exe"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "axios-cookiejar-support": "^5.0.5",
+    "csv-database": "^0.9.2",
+    "edge-paths": "^3.0.5",
+    "exceljs": "^4.4.0",
+    "puppeteer-core": "^25.10.0",
+    "puppeteer-extra": "^3.3.6",
+    "randomstring": "^1.3.1",
+    "sanitize-filename": "^1.6.3",
+    "tough-cookie": "^5.1.2",
+    "which": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/randomstring": "^1.3.0",
+    "@types/which": "^3.0.4",
+    "webpack-cli": "^5.1.4"
+  },
+  "pkg": {
+    "scripts": [
+      "dist/built.js"
+    ]
+  }
+}
