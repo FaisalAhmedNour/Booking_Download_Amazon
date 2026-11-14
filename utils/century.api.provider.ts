@@ -742,6 +742,40 @@ export class CenturyAPIProvider{
             return {found:false,message:errorMsg};
         }
     }
+    async getAllBookingItems(bookingKey:string):Promise<{found:boolean;message?:string;data?:any[]}>{
+        try {
+            const url=`/Vob/Vob/SearchBookingItem?formId=1000015&whereClause=%7B%7D&bookingKey=${encodeURIComponent(bookingKey)}&isLoadSizeData=false`;
+            const resp=await this.instance.get(url,{
+                headers:{
+                    Origin:"https://www.centuryvms.com",
+                    Referer:"https://www.centuryvms.com/"
+                }
+            });
+            if(resp?.status===200 && resp.data){
+                const resData=resp.data;
+                let rows: any[] = [];
+                if(Array.isArray(resData)){
+                    rows = resData;
+                } else if(Array.isArray(resData.GridDataTable)){
+                    rows = resData.GridDataTable;
+                } else if(Array.isArray(resData.ResultData)){
+                    rows = resData.ResultData;
+                } else if(Array.isArray(resData.data)){
+                    rows = resData.data;
+                } else if(resData.GridDataSet && typeof resData.GridDataSet === 'object'){
+                    const firstProp = Object.keys(resData.GridDataSet)[0];
+                    if(firstProp && Array.isArray(resData.GridDataSet[firstProp])){
+                        rows = resData.GridDataSet[firstProp];
+                    }
+                }
+                return {found: rows.length > 0, data: rows};
+            }
+            return {found:false,message:`SearchBookingItem returned status ${resp?.status}`};
+        } catch (error:any) {
+            const errorMsg=error?.response?.data?.Message||error?.response?.data?.message||(error instanceof Error?error.message:String(error));
+            return {found:false,message:errorMsg};
+        }
+    }
     async uploadCSV(file:Buffer,bookingKey:string,companyId:string):Promise<IUploadCSVResult>{
         try {
             const formData = new FormData();

@@ -9,7 +9,9 @@
         "settings":{
             "companyCode": "589 - Amazon Multi Country Consolidation Thailand",
             "downloadPoItems": true,
-            "downloadPdf": true,
+            "combinePoItems": true,
+            "keepIndividualFiles": true,
+            "downloadPdf": false,
             "downloadDir": "C:\\Users\\faisa\\Downloads\\exp download"
         }
     }

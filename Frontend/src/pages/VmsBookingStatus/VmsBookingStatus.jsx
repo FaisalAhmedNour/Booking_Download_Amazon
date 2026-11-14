@@ -518,7 +518,7 @@ export default function VmsBookingStatus() {
 
     // Start batch download of selected bookings via backend engine
     const handleStartBookingDownload = async (config) => {
-        const { userName, password, companyCode, downloadDir, downloadPoItems, downloadPdf, selectedRows } = config;
+        const { userName, password, companyCode, downloadDir, downloadPoItems, combinePoItems, keepIndividualFiles, downloadPdf, selectedRows } = config;
 
         try {
             currentProcessModeRef.current = 'download_selected';
@@ -546,6 +546,8 @@ export default function VmsBookingStatus() {
                 settings: {
                     companyCode,
                     downloadPoItems,
+                    combinePoItems: combinePoItems !== false,
+                    keepIndividualFiles: keepIndividualFiles === true,
                     downloadPdf,
                     downloadDir
                 }
@@ -1696,10 +1698,10 @@ export default function VmsBookingStatus() {
                                                 {row.download_status ? (
                                                     <div className="flex flex-col gap-0.5">
                                                         <div className="flex items-center gap-1">
-                                                            {row.po_item_file === 'Downloaded' && (
-                                                                <Tooltip title="PO Items Excel saved to disk">
+                                                            {(row.po_item_file === 'Downloaded' || row.po_item_file === 'Combined') && (
+                                                                <Tooltip title={row.po_item_file === 'Combined' ? "PO Items merged into combined Excel file" : "PO Items Excel saved to disk"}>
                                                                     <Chip
-                                                                        label="PO Items"
+                                                                        label={row.po_item_file === 'Combined' ? "PO Items (Combined)" : "PO Items"}
                                                                         size="small"
                                                                         color="success"
                                                                         sx={{ height: 18, fontSize: 10, fontWeight: 700 }}

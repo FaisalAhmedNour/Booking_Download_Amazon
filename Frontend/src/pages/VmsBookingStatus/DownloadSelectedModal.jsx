@@ -53,6 +53,8 @@ export default function DownloadSelectedModal({
     const [companyCode, setCompanyCode] = useState('');
     const [downloadDir, setDownloadDir] = useState(() => localStorage.getItem('centuryvms_saved_download_dir') || '');
     const [downloadPoItems, setDownloadPoItems] = useState(true);
+    const [combinePoItems, setCombinePoItems] = useState(true);
+    const [keepIndividualFiles, setKeepIndividualFiles] = useState(false);
     const [downloadPdf, setDownloadPdf] = useState(true);
     const [isSelectingFolder, setIsSelectingFolder] = useState(false);
     const [formError, setFormError] = useState(null);
@@ -129,6 +131,8 @@ export default function DownloadSelectedModal({
             companyCode,
             downloadDir: downloadDir.trim(),
             downloadPoItems,
+            combinePoItems,
+            keepIndividualFiles,
             downloadPdf,
             selectedRows
         });
@@ -310,6 +314,42 @@ export default function DownloadSelectedModal({
                                         </span>
                                     }
                                 />
+                                {downloadPoItems && (
+                                    <div className="ml-5 pl-2.5 border-l-2 border-blue-400 flex flex-col gap-1 py-1 my-0.5">
+                                        <FormControlLabel
+                                            control={
+                                                <Checkbox
+                                                    size="small"
+                                                    checked={combinePoItems}
+                                                    onChange={(e) => setCombinePoItems(e.target.checked)}
+                                                    color="primary"
+                                                />
+                                            }
+                                            label={
+                                                <span className="text-xs font-semibold text-blue-900">
+                                                    Combine all PO Items into a single Excel file (Single Page)
+                                                </span>
+                                            }
+                                        />
+                                        {combinePoItems && (
+                                            <FormControlLabel
+                                                control={
+                                                    <Checkbox
+                                                        size="small"
+                                                        checked={keepIndividualFiles}
+                                                        onChange={(e) => setKeepIndividualFiles(e.target.checked)}
+                                                        color="primary"
+                                                    />
+                                                }
+                                                label={
+                                                    <span className="text-[11px] text-gray-600">
+                                                        Also keep separate Excel files for each booking
+                                                    </span>
+                                                }
+                                            />
+                                        )}
+                                    </div>
+                                )}
                                 <FormControlLabel
                                     control={
                                         <Checkbox

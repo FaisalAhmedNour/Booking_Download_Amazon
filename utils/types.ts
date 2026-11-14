@@ -60,6 +60,8 @@ export type Settings = {
     emailAddressToReceiveFCR?: string;
     shipperName?: string;
     downloadPoItems?: boolean;
+    combinePoItems?: boolean;
+    keepIndividualFiles?: boolean;
     downloadPdf?: boolean;
     downloadDir?: string;
     status?: 'Draft' | 'Sent' | string;

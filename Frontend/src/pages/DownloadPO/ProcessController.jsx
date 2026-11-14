@@ -229,9 +229,9 @@ const ProcessController = ({
                                         marginTop: "1px",
                                         bgcolor: "white",
                                         color: "#283e8a",
-                                        ":hover": {
-                                            color: "white",
-                                        },
+                                        // ":hover": {
+                                        //     color: "white",
+                                        // },
                                     }}
                                     component="label"
                                     variant="contained"
@@ -281,9 +281,9 @@ const ProcessController = ({
                                         marginTop: "1px",
                                         bgcolor: "white",
                                         color: "#283e8a",
-                                        ":hover": {
-                                            color: "white",
-                                        },
+                                        // ":hover": {
+                                        //     color: "white",
+                                        // },
                                     }}
                                     component="label"
                                     variant="contained"
@@ -349,6 +349,42 @@ const ProcessController = ({
                                         </span>
                                     }
                                 />
+                                {(formData?.settings?.downloadPoItems ?? true) && (
+                                    <div className="ml-5 pl-2.5 border-l-2 border-blue-400 flex flex-col gap-1 py-1 my-0.5">
+                                        <FormControlLabel
+                                            control={
+                                                <Checkbox
+                                                    size="small"
+                                                    checked={formData?.settings?.combinePoItems ?? true}
+                                                    onChange={(e) => handleSettingChange("combinePoItems", e.target.checked)}
+                                                    color="primary"
+                                                />
+                                            }
+                                            label={
+                                                <span className="text-xs font-semibold text-blue-900">
+                                                    Combine all PO Items into a single Excel file (Single Page)
+                                                </span>
+                                            }
+                                        />
+                                        {(formData?.settings?.combinePoItems ?? true) && (
+                                            <FormControlLabel
+                                                control={
+                                                    <Checkbox
+                                                        size="small"
+                                                        checked={formData?.settings?.keepIndividualFiles ?? false}
+                                                        onChange={(e) => handleSettingChange("keepIndividualFiles", e.target.checked)}
+                                                        color="primary"
+                                                    />
+                                                }
+                                                label={
+                                                    <span className="text-[11px] text-gray-600">
+                                                        Also keep separate Excel files for each booking
+                                                    </span>
+                                                }
+                                            />
+                                        )}
+                                    </div>
+                                )}
                                 <FormControlLabel
                                     control={
                                         <Checkbox

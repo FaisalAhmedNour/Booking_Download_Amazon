@@ -5,6 +5,7 @@ import pullBookingStatus from './functions/pullBookingStatus';
 import { DataManager, MemoryDataManager } from './utils/DataManager';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 
 // Load config from EngineTestConfig.json or fallback
 let config: any = {};
@@ -80,13 +81,15 @@ async function runLocalTest() {
         password: config.initData?.password || 'Epic@123456',
         excelFile: excelPath,
         bookings: selectedBookings,
-        downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : process.cwd()),
+        downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : path.join(os.homedir(), 'Downloads')),
         settings: {
             status: targetStatus,
             companyCode: config.initData?.settings?.companyCode || '589 - Amazon Multi Country Consolidation Thailand',
             downloadPoItems: config.initData?.settings?.downloadPoItems !== false,
+            combinePoItems: config.initData?.settings?.combinePoItems !== false,
+            keepIndividualFiles: config.initData?.settings?.keepIndividualFiles === true,
             downloadPdf: config.initData?.settings?.downloadPdf !== false,
-            downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : process.cwd())
+            downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : path.join(os.homedir(), 'Downloads'))
         }
     };
 

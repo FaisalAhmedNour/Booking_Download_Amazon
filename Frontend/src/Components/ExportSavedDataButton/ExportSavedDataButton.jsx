@@ -117,7 +117,7 @@ const ExportSavedDataButton = ({
             worksheet.addRow(headers);
 
             dataToExport.forEach(row => {
-                worksheet.addRow([row?.id, row?.title, row?.completed]);
+                worksheet.addRow(dataKeys ? dataKeys.map(k => row?.[k] ?? '') : headers.map(h => row?.[h] ?? ''));
             });
         }
 
@@ -127,7 +127,8 @@ const ExportSavedDataButton = ({
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${filename}.${includeTable ? 'xlsx' : 'csv'}`;
+        const cleanName = String(filename || 'export').replace(/[^a-zA-Z0-9_\-]/g, '_');
+        a.download = `${cleanName}.xlsx`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

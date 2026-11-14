@@ -41,6 +41,8 @@ const DownloadPO = () => {
             settings: {
                 companyCode: defaultCompany.companyCode || "589 - Amazon Multi Country Consolidation Thailand",
                 downloadPoItems: true,
+                combinePoItems: true,
+                keepIndividualFiles: false,
                 downloadPdf: true,
                 downloadDir: ""
             }
@@ -187,7 +189,7 @@ const DownloadPO = () => {
             // }
             // handleCloseModal();
             handleClose();
-            console.log("data", data);
+            console.log("payload", data);
             setOriginalTableBodyDataOfPulledFromEngine([]);
             setTableBodyDataOfPulledFromEngine([]);
             const p = await window?.engine?.startProcess(data);
