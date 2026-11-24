@@ -1,6 +1,7 @@
 import { AppCreator } from "../utils/App";
 import { isEmpty, sleep } from "../utils/common";
 import { CenturyAPIProvider } from "../utils/century.api.provider";
+import { VmsStatusStore } from "../utils/vmsStatusStore";
 import { IDataFormExcel } from "../utils/types";
 import { Page } from "puppeteer-core";
 import { Workbook } from "exceljs";
@@ -569,6 +570,7 @@ export default async function issueBooking(app: AppCreator) {
     }
 
     const vmaApiProvider = new CenturyAPIProvider(await app.createSession());
+    const statusStore = new VmsStatusStore(app);
     app?.LocalCom?.progress?.setTotal(app.dateManager.length);
 
     const sesResp = await app.LocalCom.progress.getNewSession(5, !app.LocalCom.CLIargs.devFlag);
@@ -821,6 +823,16 @@ export default async function issueBooking(app: AppCreator) {
             }
 
             await app.LocalCom.sendData([data]);
+
+            // Remember the result on the saved VMS status row (ignored if the booking was never pulled).
+            if (data.booking_number) {
+                await statusStore.saveDownloadResult(data.booking_number, {
+                    poItemFile: data.po_item_file,
+                    pdfFile: data.pdf_file,
+                    downloadSuccess: data.Success,
+                    downloadMessage: data.Message,
+                });
+            }
 
             if (!resp.continue) {
                 app.LocalCom.progress.setTitleAndMessage("Stopped.", resp.message);

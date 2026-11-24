@@ -1,6 +1,7 @@
 import { AppCreator } from "../utils/App";
 import { sleep } from "../utils/common";
 import { CenturyAPIProvider } from "../utils/century.api.provider";
+import { VmsStatusStore } from "../utils/vmsStatusStore";
 
 export default async function pullBookingStatus(app: AppCreator) {
     try {
@@ -101,6 +102,12 @@ export default async function pullBookingStatus(app: AppCreator) {
         let stopMessage: string | null = null;
         const STREAM_CHUNK_SIZE = 30; // Progressive chunk size for real-time frontend streaming
 
+        // Saved to the UIC backend so the VMS Booking Status tab can reload it later.
+        const store = new VmsStatusStore(app);
+        const runStartedAt = new Date().toISOString();
+        // Only a pull where every status was fetched may hide bookings that disappeared.
+        let allStatusesFetched = true;
+
         for (let i = 0; i < statusList.length; i++) {
             const item = statusList[i];
             const statusKey = item.status || item.Booking_Status;
@@ -142,6 +149,15 @@ export default async function pullBookingStatus(app: AppCreator) {
                             rownum: r.rownum || (idx + 1)
                         }));
 
+                        // Persist only rows with a real booking key (not the BK_<status>_<n> placeholder).
+                        const rowsToSave = enrichedRows.filter((_: any, idx: number) => {
+                            const r = rawRows[idx];
+                            return r && (r.booking_key || r.booking_key_for_export || r.customer_booking_number || r.customBookingId);
+                        });
+                        if (rowsToSave.length > 0) {
+                            await store.saveRows(rowsToSave, runStartedAt);
+                        }
+
                         // Stream rows to frontend immediately in progressive chunks (like Booking Correction tab)
                         for (let cIdx = 0; cIdx < enrichedRows.length; cIdx += STREAM_CHUNK_SIZE) {
                             const chunk = enrichedRows.slice(cIdx, cIdx + STREAM_CHUNK_SIZE);
@@ -178,6 +194,7 @@ export default async function pullBookingStatus(app: AppCreator) {
                         }
                     }
                 } else {
+                    allStatusesFetched = false;
                     console.warn(`[pullBookingStatus] Could not fetch grid for status "${statusKey}": ${gridResult.message}`);
                     await app.LocalCom.sendData(undefined, [{
                         channel: app.LocalCom.progress.channel,
@@ -187,6 +204,7 @@ export default async function pullBookingStatus(app: AppCreator) {
                     }]);
                 }
             } catch (statusErr: any) {
+                allStatusesFetched = false;
                 console.error(`[pullBookingStatus] Error fetching status "${statusKey}":`, statusErr);
             }
 
@@ -213,6 +231,13 @@ export default async function pullBookingStatus(app: AppCreator) {
                 message: `${stopMessage} (${totalBookingsPulled} bookings pulled before stopping.)`
             }]);
             return;
+        }
+
+        // Complete pull and everything saved: hide saved bookings that VMS no longer returns.
+        if (allStatusesFetched && store.allSaved) {
+            await store.finalize(runStartedAt);
+        } else {
+            console.log(`[pullBookingStatus] Skipping finalize (allStatusesFetched=${allStatusesFetched}, allSaved=${store.allSaved}).`);
         }
 
         console.log(`[pullBookingStatus] Finished pulling all statuses. Total records: ${totalBookingsPulled}`);

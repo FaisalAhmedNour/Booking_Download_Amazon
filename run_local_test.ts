@@ -6,6 +6,7 @@ import { DataManager, MemoryDataManager } from './utils/DataManager';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import axios from 'axios';
 
 // Load config from EngineTestConfig.json or fallback
 let config: any = {};
@@ -148,6 +149,22 @@ async function runLocalTest() {
                 },
                 getObj: () => ({ channel: 'd' })
             },
+            // Stand-in for the engine proxy: calls the UIC backend directly when
+            // EngineTestConfig.json has baseUrl + apiKey; otherwise saving is skipped.
+            Proxy: (config.baseUrl && config.apiKey) ? (() => {
+                const http = axios.create({
+                    baseURL: String(config.baseUrl).replace(/\/+$/, ''),
+                    headers: { Authorization: `Bearer ${config.apiKey}` },
+                    validateStatus: (s: number) => s < 500,
+                    timeout: 15000,
+                });
+                return {
+                    get: (url: string) => http.get(url),
+                    post: (url: string, data: unknown) => http.post(url, data),
+                    patch: (url: string, data: unknown) => http.patch(url, data),
+                    delete: (url: string, data: unknown) => http.delete(url, { data }),
+                };
+            })() : undefined,
             sendData: (tableData: any, messages: any, log: any) => {
                 if (messages && messages.length > 0) {
                     for (const m of messages) {
