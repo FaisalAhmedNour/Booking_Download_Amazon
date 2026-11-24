@@ -4,7 +4,6 @@ import puppeteer from "puppeteer-extra";
 import { getAnyEdgeStable } from "./edge-path";
 import { dirExists, fileExists, fileReadOK, isEmpty, sleep } from "./common";
 import { IInitData } from "./types";
-import { devArg } from "../devArg";
 import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
 import axios from "axios";

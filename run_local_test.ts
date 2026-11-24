@@ -78,8 +78,8 @@ async function runLocalTest() {
     // 2. Setup Init Data
     app.initData = {
         mode: isPullStatus ? 'pull_status' : isDownloadSelected ? 'download_selected' : 'download_po',
-        userName: config.initData?.userName || 'AMZ1599-0',
-        password: config.initData?.password || 'Epic@123456',
+        userName: config.initData?.userName || process.env.CENTURY_VMS_USER || '',
+        password: config.initData?.password || process.env.CENTURY_VMS_PASSWORD || '',
         excelFile: excelPath,
         bookings: selectedBookings,
         downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : path.join(os.homedir(), 'Downloads')),
@@ -93,6 +93,12 @@ async function runLocalTest() {
             downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : path.join(os.homedir(), 'Downloads'))
         }
     };
+
+    if (!app.initData.userName || !app.initData.password) {
+        console.error('❌ Century VMS credentials missing. Set initData.userName/password in EngineTestConfig.json '
+            + '(copy EngineTestConfig.example.json) or the CENTURY_VMS_USER / CENTURY_VMS_PASSWORD env vars.');
+        process.exit(1);
+    }
 
     console.log(`👤 User: ${app.initData.userName}`);
     if (isPullStatus) {

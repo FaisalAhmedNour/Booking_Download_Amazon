@@ -1895,7 +1895,7 @@ export default function VmsBookingStatus() {
                             required
                             value={backendCreds.userName}
                             onChange={(e) => setBackendCreds(prev => ({ ...prev, userName: e.target.value }))}
-                            placeholder="e.g. AMZ1599-0"
+                            placeholder="Century VMS username"
                             InputProps={{ style: { fontSize: '13px' } }}
                             InputLabelProps={{ style: { fontSize: '13px' } }}
                         />
