@@ -142,6 +142,10 @@ async function runLocalTest() {
                     console.log(`[FAIL] Failed ${count} item(s)`);
                     return Promise.resolve({ continue: true, message: 'Fail' });
                 },
+                flushBuffer: () => {
+                    console.log('[PROGRESS] Flushed progress buffer');
+                    return Promise.resolve({ continue: true, message: 'OK' });
+                },
                 getObj: () => ({ channel: 'd' })
             },
             sendData: (tableData: any, messages: any, log: any) => {

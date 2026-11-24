@@ -563,9 +563,10 @@ async function downloadBookingPdf(app: AppCreator, apiProvider: CenturyAPIProvid
 }
 
 export default async function issueBooking(app: AppCreator) {
-    await app.Page.goto("https://www.centuryvms.com/#/pagelayout?moduleCd=Vob&configName=VobMain", { timeout: 60_000 });
-    await sleep(25_000);
-    await app.Page.reload({ waitUntil: "load" });
+    const portalReady = await app.openPortalPage("https://www.centuryvms.com/#/pagelayout?moduleCd=Vob&configName=VobMain");
+    if (!portalReady) {
+        console.warn('[issueBooking] Century VMS access token not found; API fallbacks and PDF download may fail.');
+    }
 
     const vmaApiProvider = new CenturyAPIProvider(await app.createSession());
     app?.LocalCom?.progress?.setTotal(app.dateManager.length);
@@ -810,7 +811,7 @@ export default async function issueBooking(app: AppCreator) {
             if (data.Success) {
                 resp = await app.LocalCom.progress.registerSuccess(1);
             } else {
-                app.LocalCom.sendData(undefined, [{
+                await app.LocalCom.sendData(undefined, [{
                     channel: app.LocalCom.progress.channel,
                     type: 'e',
                     title: `Booking: ${data.booking_number || poTitle}`,
@@ -823,7 +824,7 @@ export default async function issueBooking(app: AppCreator) {
 
             if (!resp.continue) {
                 app.LocalCom.progress.setTitleAndMessage("Stopped.", resp.message);
-                app.LocalCom.sendData(undefined, [
+                await app.LocalCom.sendData(undefined, [
                     {
                         channel: app.LocalCom.progress.channel,
                         type: 'e',
@@ -836,6 +837,13 @@ export default async function issueBooking(app: AppCreator) {
 
             app.dateManager.next();
         }
+    }
+
+    // Report the last (< buffer size) success/fail counts that are still buffered.
+    try {
+        await app.LocalCom.progress.flushBuffer();
+    } catch (flushErr) {
+        console.warn('[issueBooking] Failed to flush progress buffer:', flushErr);
     }
 
     // 5. Generate Single Combined Excel File if requested

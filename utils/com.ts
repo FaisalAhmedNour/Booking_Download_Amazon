@@ -94,18 +94,29 @@ export class Progress {
     }
     this.lastTime= now
   }
+  /**
+   * Reports any buffered success/fail counts to the Remote Server now, even if the
+   * buffer is not full. Call at the end of a run (and on stop) so no counts are lost.
+   * @modified 2026-11-25 by Faisal Ahmed: force-send pending counts
+   */
   async flushBuffer(){
-    return this.updateBuffer()
+    if (this.statusBuffer.success + this.statusBuffer.failed === 0) {
+      return { continue: true, message: "Nothing to flush" };
+    }
+    return this.updateBuffer(0, true)
   }
   /**
    * Update buffer and sends status when it overflows.
    * @param count Success count or failed count positive if success negative if failed.
+   * @param force Send pending counts even if the buffer is not full.
    * @returns Response form Remote Server or buffer.
    * @created 2025-03-14 by Istyaq Ahmmed
-   * @modified none
+   * @modified 2026-11-25 by Faisal Ahmed: added force
    */
-  private async updateBuffer(count: number = 0) {
-    this.updateAvgTime();
+  private async updateBuffer(count: number = 0, force: boolean = false) {
+    if (count !== 0) {
+      this.updateAvgTime();
+    }
     if (count > 0) {
       this.complete += count;
       this.statusBuffer.remaining -= count;
@@ -115,6 +126,7 @@ export class Progress {
       this.statusBuffer.failed -= count;
     }
     if (
+      force ||
       this.statusBuffer.failed + this.statusBuffer.success >=
         this.statusBuffer.size ||
       this.statusBuffer.remaining < 1
