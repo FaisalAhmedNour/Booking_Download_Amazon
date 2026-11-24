@@ -17,6 +17,7 @@ import EmailOutlinedIcon from "@mui/icons-material/EmailOutlined";
 import SimCardDownloadOutlinedIcon from "@mui/icons-material/SimCardDownloadOutlined";
 import FormatDownload from "./FormatDownload";
 import SettingsMenu from "../Settings/SettingsMenu";
+import { PROCESS_OWNER, isProcessOwnedBy, setProcessOwner } from "../../Functions/processOwner";
 
 const DownloadPO = () => {
     const listenerAdded = useRef(false);
@@ -104,6 +105,7 @@ const DownloadPO = () => {
 
     const getEngineOnSignal = () => {
         window?.engine?.onProcessStart(function (message) {
+            if (!isProcessOwnedBy(PROCESS_OWNER.DOWNLOAD_PO)) return;
             setIsProcessing(true);
             setIsExpandMiniTimer(true);
         });
@@ -111,6 +113,7 @@ const DownloadPO = () => {
 
     const getEngineOffSignal = () => {
         window?.engine?.onProcessStop(function (message) {
+            if (!isProcessOwnedBy(PROCESS_OWNER.DOWNLOAD_PO)) return;
             setIsExpandMiniTimer(false);
             setIsProcessing(false);
         });
@@ -123,8 +126,10 @@ const DownloadPO = () => {
         getEngineOffSignal();
 
         const handleTableData = (dt) => {
-            console.log('row', dt);
             if (!dt) return;
+            // Rows from a run started on the VMS Booking Status tab belong there.
+            if (!isProcessOwnedBy(PROCESS_OWNER.DOWNLOAD_PO)) return;
+            console.log('row', dt);
 
             const items = Array.isArray(dt.data) && dt.data.length > 0 ? dt.data : [{}];
             const newRows = [];
@@ -172,26 +177,11 @@ const DownloadPO = () => {
     // trigger engine start
     const startEngine = async (data) => {
         try {
-            // const test_data = {
-            //     "excelFile": "C:/Users/faisa/Downloads/UCS Oct Delivery PO on 9.11___master chart.xlsx",
-            //     // "excelFile": "C:/Users/faisa/Downloads/BOOKING_FORMAT_CENT_V.0.0.1 DT 08.06.2026.xlsx",
-            //     "userName": "AMZ1599-0",
-            //     "password": "Epic@123456",
-            //     "settings": {
-            //         "companyCode": "589 - Amazon Multi Country Consolidation Thailand",
-            //         "shipVendorCode": " EPLYL - Epic Garments DWC LLC|EPIC Garments Manufacturing Co. Ltd (S004877)|ST-636242|PBGO-Laem Chabang|WW|Private Brands",
-            //         "contactPhone": "01914434666",
-            //         "contactEmail": "alauddinc@epicbd.com",
-            //         "addEditManufacturer": "Epic Garments Manufacturing Co. Ltd.",
-            //         "emailAddressToReceiveFCR": "alauddinc@epicbd.com",
-            //         "shipperName": "Epic Garments DWC LLC"
-            //     }
-            // }
-            // handleCloseModal();
             handleClose();
             console.log("payload", data);
             setOriginalTableBodyDataOfPulledFromEngine([]);
             setTableBodyDataOfPulledFromEngine([]);
+            setProcessOwner(PROCESS_OWNER.DOWNLOAD_PO);
             const p = await window?.engine?.startProcess(data);
             console.log("start process", p)
             if (p?.success === true) {

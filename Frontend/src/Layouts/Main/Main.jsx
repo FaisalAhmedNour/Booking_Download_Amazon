@@ -1,9 +1,13 @@
-import { Outlet, NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
-import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
+import DownloadPO from "../../pages/DownloadPO/DownloadPO";
+import VmsBookingStatus from "../../pages/VmsBookingStatus/VmsBookingStatus";
 
 const Main = () => {
+    const { pathname } = useLocation();
+    const isVmsStatus = pathname === "/vms-status";
+
     return (
         <div className="max-w-[1600px] mx-auto min-h-screen flex flex-col p-2">
             {/* Top Module Switcher Navigation */}
@@ -22,20 +26,6 @@ const Main = () => {
                     >
                         <AssignmentTurnedInIcon sx={{ fontSize: 16 }} />
                         <span>Amazon Booking Download</span>
-                    </NavLink>
-
-                    <NavLink
-                        to="/builder"
-                        className={({ isActive }) =>
-                            `flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                                isActive
-                                    ? "bg-indigo-600 text-white shadow-sm"
-                                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                            }`
-                        }
-                    >
-                        <AutoAwesomeIcon sx={{ fontSize: 16 }} />
-                        <span>Excel Booking Builder</span>
                     </NavLink>
 
                     <NavLink
@@ -58,8 +48,12 @@ const Main = () => {
                 </div>
             </div>
 
-            <div className="flex-1">
-                <Outlet />
+            {/* Both pages stay mounted so tables and engine listeners survive tab switches. */}
+            <div className={`flex-1 ${isVmsStatus ? "hidden" : ""}`}>
+                <DownloadPO />
+            </div>
+            <div className={`flex-1 ${isVmsStatus ? "" : "hidden"}`}>
+                <VmsBookingStatus />
             </div>
         </div>
     );

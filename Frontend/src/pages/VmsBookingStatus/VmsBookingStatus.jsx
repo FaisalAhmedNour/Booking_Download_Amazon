@@ -57,8 +57,12 @@ import {
     setStoredGridUrlTemplate,
     DEFAULT_URLS,
     parseVmsResponse,
-    normalizeStatus
+    normalizeStatus,
+    loadSavedVmsData,
+    clearSavedVmsData
 } from './vmsApi';
+import Swal from 'sweetalert2';
+import { PROCESS_OWNER, isProcessOwnedBy, setProcessOwner } from '../../Functions/processOwner';
 import BookingDetailModal from './BookingDetailModal';
 import PasteJsonModal from './PasteJsonModal';
 import DownloadSelectedModal from './DownloadSelectedModal';
@@ -147,39 +151,51 @@ export default function VmsBookingStatus() {
     const [seconds, setSeconds] = useState(0);
     const [succeed, setSucceed] = useState(0);
 
-    // Save status summary to localStorage on update
-    useEffect(() => {
-        try {
-            if (statusSummary && Array.isArray(statusSummary)) {
-                localStorage.setItem('centuryvms_saved_status_summary', JSON.stringify(statusSummary));
+    // Saved data on the UIC backend (written by the backend module while it runs)
+    const [isLoadingSaved, setIsLoadingSaved] = useState(false);
+    const [lastPulledAt, setLastPulledAt] = useState(null);
+    const gridDataRef = useRef(gridData);
+    gridDataRef.current = gridData;
+
+    /**
+     * Loads saved rows and summary. With `onlyIfNotSmaller`, keeps the live table when the
+     * server has fewer rows (e.g. some saves failed during the run).
+     */
+    const reloadSavedData = async ({ onlyIfNotSmaller = false, quiet = false } = {}) => {
+        setIsLoadingSaved(true);
+        const res = await loadSavedVmsData();
+        setIsLoadingSaved(false);
+
+        if (!res.success) {
+            if (!quiet && !res.unavailable) {
+                setApiError({
+                    title: 'Could Not Load Saved Booking Data',
+                    message: res.error || 'Unknown error.'
+                });
             }
-        } catch {
-            // Ignore
+            return false;
         }
-    }, [statusSummary]);
+        if (onlyIfNotSmaller && res.rows.length < (gridDataRef.current?.length || 0)) {
+            console.warn(`[VmsBookingStatus] Server has ${res.rows.length} rows, table has ${gridDataRef.current.length}; keeping live table.`);
+            return false;
+        }
 
-    // Debounced & quota-safe save of grid data to localStorage
+        setGridData(res.rows);
+        setStatusSummary(res.summary);
+        setLastPulledAt(res.lastPulledAt);
+        return true;
+    };
+
+    // Load saved data once when the module opens
     useEffect(() => {
-        if (!gridData || !Array.isArray(gridData) || gridData.length === 0) {
-            return;
-        }
-
-        const timer = setTimeout(() => {
-            try {
-                // Safeguard against QuotaExceededError (localStorage max is ~5MB)
-                const safeToStore = gridData.length > 2500 ? gridData.slice(0, 2500) : gridData;
-                localStorage.setItem('centuryvms_saved_grid_data', JSON.stringify(safeToStore));
-            } catch (err) {
-                console.warn('[VmsBookingStatus] LocalStorage quota exceeded or error saving grid data:', err);
-            }
-        }, 1500);
-
-        return () => clearTimeout(timer);
-    }, [gridData]);
+        reloadSavedData({ quiet: true });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Listen to backend process IPC events
     useEffect(() => {
         const handleProcessStart = () => {
+            if (!isProcessOwnedBy(PROCESS_OWNER.VMS_STATUS)) return;
             if (currentProcessModeRef.current !== 'download_selected') {
                 setGridData([]);
                 setStatusSummary([]);
@@ -192,14 +208,20 @@ export default function VmsBookingStatus() {
         };
 
         const handleProcessStop = () => {
+            if (!isProcessOwnedBy(PROCESS_OWNER.VMS_STATUS)) return;
             setIsBackendProcessing(false);
             setIsExpandMiniTimer(false);
             setEngineStatus("Stopped");
+            // Pick up what the run saved (stale flags, download results), unless the
+            // server has fewer rows than the live table.
+            setTimeout(() => reloadSavedData({ onlyIfNotSmaller: true, quiet: true }), 1500);
         };
 
         const handleTableData = (dt) => {
-            console.log('[onTableData received]', dt);
             if (!dt) return;
+            // Rows from a run started on the Amazon Booking Download tab belong there.
+            if (!isProcessOwnedBy(PROCESS_OWNER.VMS_STATUS)) return;
+            console.log('[onTableData received]', dt);
 
             const items = extractPayloadItems(dt);
             if (!items || items.length === 0) return;
@@ -456,6 +478,7 @@ export default function VmsBookingStatus() {
             setIsBackendProcessing(true);
             setIsExpandMiniTimer(true);
 
+            setProcessOwner(PROCESS_OWNER.VMS_STATUS);
             const res = await window?.engine?.startProcess({
                 mode: 'pull_status',
                 userName: backendCreds.userName,
@@ -541,6 +564,7 @@ export default function VmsBookingStatus() {
                 po: String(r.po || '').trim(),
             }));
 
+            setProcessOwner(PROCESS_OWNER.VMS_STATUS);
             const res = await window?.engine?.startProcess({
                 mode: 'download_selected',
                 userName,
@@ -592,15 +616,33 @@ export default function VmsBookingStatus() {
         }
     };
 
-    // Clear all cached data
-    const handleClearAllData = () => {
+    // Clear the table and the saved data on the server (after confirmation)
+    const handleClearAllData = async () => {
+        const confirm = await Swal.fire({
+            title: 'Clear saved booking data?',
+            text: 'This deletes the saved VMS booking status data for your company. You can pull it again from Century VMS.',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Clear',
+            confirmButtonColor: '#d33',
+        });
+        if (!confirm.isConfirmed) return;
+
+        const res = await clearSavedVmsData();
+        if (!res.success && !res.unavailable) {
+            setApiError({
+                title: 'Could Not Clear Saved Data',
+                message: res.error || 'Unknown error.'
+            });
+            return;
+        }
+
         setStatusSummary([]);
         setGridData([]);
         setSelectedRowKeys(new Set());
         setPage(0);
-        localStorage.removeItem('centuryvms_saved_status_summary');
-        localStorage.removeItem('centuryvms_saved_grid_data');
-        setSuccessBanner('Cleared all loaded table data.');
+        setLastPulledAt(null);
+        setSuccessBanner(res.success ? `Cleared ${res.deleted} saved booking record(s).` : 'Cleared the table.');
         setTimeout(() => setSuccessBanner(null), 2500);
     };
 
@@ -1036,6 +1078,18 @@ export default function VmsBookingStatus() {
                             </div>
                             <p className="text-xs text-gray-500 mt-0.5">
                                 Pull real-time booking status summaries & individual status grids directly from Century VMS.
+                            </p>
+                            <p className="text-[11px] text-gray-500 mt-0.5 flex items-center gap-1">
+                                {isLoadingSaved ? (
+                                    <>
+                                        <CircularProgress size={10} color="inherit" />
+                                        <span>Loading saved booking data...</span>
+                                    </>
+                                ) : lastPulledAt ? (
+                                    <span>Last pulled: <strong>{formatVmsDate(lastPulledAt, 'DD-MMM-YYYY hh:mm A')}</strong></span>
+                                ) : (
+                                    <span>No saved data yet. Use &quot;Pull via Backend&quot; to load bookings.</span>
+                                )}
                             </p>
                         </div>
                     </div>
