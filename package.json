@@ -8,8 +8,10 @@
     "test:local": "npx tsx run_local_test.ts",
     "test:status": "npx tsx run_local_test.ts --pull-status",
     "test:download": "npx tsx run_local_test.ts --download-selected",
+    "compile": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "mini": "webpack --config webpack.config.js",
-    "build": "pkg dist/built.js --targets node18-win-x64 -o ./build/6ac7964cf34bc7c0f89bf56a.exe"
+    "build": "npm run compile && npm run mini && pkg dist/built.js --targets node18-win-x64 -o ./build/6acb996ef34bc7c0f8cc1d81.exe"
   },
   "author": "",
   "license": "ISC",
@@ -30,6 +32,7 @@
   "devDependencies": {
     "@types/randomstring": "^1.3.0",
     "@types/which": "^3.0.4",
+    "typescript": "~5.9.3",
     "webpack-cli": "^5.1.4"
   },
   "pkg": {

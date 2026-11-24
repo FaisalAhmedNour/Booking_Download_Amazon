@@ -51,6 +51,9 @@ importers:
       '@types/which':
         specifier: ^3.0.4
         version: 3.0.4
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
       webpack-cli:
         specifier: ^5.1.4
         version: 5.1.4(webpack@5.107.2)
@@ -1094,6 +1097,11 @@ packages:
 
   typed-query-selector@2.12.2:
     resolution: {integrity: sha512-EOPFbyIub4ngnEdqi2yOcNeDLaX/0jcE1JoAXQDDMIthap7FoN795lc/SHfIq2d416VufXpM8z/lD+WRm2gfOQ==}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
 
   undici-types@8.3.0:
     resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
@@ -2235,6 +2243,8 @@ snapshots:
       utf8-byte-length: 1.0.5
 
   typed-query-selector@2.12.2: {}
+
+  typescript@5.9.3: {}
 
   undici-types@8.3.0: {}
 

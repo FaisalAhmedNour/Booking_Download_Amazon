@@ -7,7 +7,7 @@ import { sleep } from './utils/common';
 
 function entry(){
     const App=new AppCreator();
-    App.initiate('6ac7964cf34bc7c0f89bf56a').then(async(app)=>{
+    App.initiate('6acb996ef34bc7c0f8cc1d81').then(async(app)=>{
         if(app!=null && app.verified===true){
             app.LocalCom.progress.setTitleAndMessage("Opening Edge.",'Trying to open Edge Browser.')
             app.LocalCom.sendData();
