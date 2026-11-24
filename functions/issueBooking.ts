@@ -23,34 +23,47 @@ function writeWorkbookSafely(wb: XLSX.WorkBook, filePath: string): void {
     fs.writeFileSync(filePath, fileBuffer);
 }
 
-async function getBookingNumber(app: AppCreator): Promise<string | null> {
-    const startTime = Date.now();
-    const timeout = 30_000;
+function sameBookingKey(a: string | null | undefined, b: string | null | undefined): boolean {
+    return !!a && !!b && a.trim().toUpperCase() === b.trim().toUpperCase();
+}
 
-    while (Date.now() - startTime < timeout) {
-        try {
-            const bookingText = await app.Page.$(
-                '#page-content > quicknavigation-component > div > div > table > tbody > tr > td:nth-child(3) > span'
-            );
-
-            if (bookingText) {
-                const innerText = await bookingText.evaluate(
-                    el => el.textContent?.trim() ?? ""
-                );
-
-                if (innerText.includes(":")) {
-                    const value = innerText.split(":")[1]?.trim();
-                    if (!isEmpty(value)) {
-                        return value.trim().split(' ')[0];
-                    }
-                }
-            }
-        } catch {
-            // Ignore temporary evaluate errors while page is transitioning
-        }
-        await sleep(1_500);
+/** Reads the booking number currently shown in the page header (e.g. "ACC589N00929BD0"), or null. */
+async function readBookingNumber(app: AppCreator): Promise<string | null> {
+    try {
+        const bookingText = await app.Page.$(
+            '#page-content > quicknavigation-component > div > div > table > tbody > tr > td:nth-child(3) > span'
+        );
+        if (!bookingText) return null;
+        const innerText = await bookingText.evaluate(el => el.textContent?.trim() ?? "");
+        if (!innerText.includes(":")) return null;
+        const value = innerText.split(":")[1]?.trim();
+        return isEmpty(value) ? null : value.split(' ')[0];
+    } catch {
+        // Temporary evaluate errors while the page is transitioning
+        return null;
     }
-    return null;
+}
+
+/**
+ * Polls the page header until it shows `expectedKey`. Moving between bookings only
+ * changes the URL hash, so the previous booking's header can stay on screen for a while.
+ */
+async function waitForBookingNumber(
+    app: AppCreator,
+    expectedKey: string,
+    timeoutMs: number
+): Promise<{ matched: boolean; lastSeen: string | null }> {
+    const startTime = Date.now();
+    let lastSeen: string | null = null;
+    while (Date.now() - startTime < timeoutMs) {
+        const current = await readBookingNumber(app);
+        if (current) lastSeen = current;
+        if (sameBookingKey(current, expectedKey)) {
+            return { matched: true, lastSeen: current };
+        }
+        await sleep(1_000);
+    }
+    return { matched: false, lastSeen };
 }
 
 async function getBookingStatusFromPage(app: AppCreator): Promise<string | null> {
@@ -118,40 +131,102 @@ async function openAndVerifyExistingBooking(app: AppCreator, bookingKey: string,
         const targetUrl = `https://www.centuryvms.com/#/pagelayout?modulecd=Vob&configName=VobWorkspace&bookingKey=${encodeURIComponent(bookingKey)}&compCd=${companyCode}`;
         console.log(`[openAndVerifyExistingBooking] Navigating to: ${targetUrl}`);
 
-        await app.Page.goto(targetUrl, { waitUntil: 'load', timeout: 60_000 });
+        try {
+            await app.Page.goto(targetUrl, { waitUntil: 'load', timeout: 60_000 });
+        } catch (gotoErr) {
+            console.warn(`[openAndVerifyExistingBooking] Initial navigation warning:`, gotoErr);
+        }
 
         // Wait for page action buttons or quick navigation to be visible
+        let pageLoaded = false;
         try {
             await app.Page.waitForSelector('#page-content, #page-content-button-list, quicknavigation-component', {
                 visible: true,
                 timeout: 30_000
             });
+            pageLoaded = true;
         } catch {
             console.log("[openAndVerifyExistingBooking] Initial wait timed out, reloading page...");
-            await app.Page.reload({ waitUntil: 'load' });
-            await app.Page.waitForSelector('#page-content, #page-content-button-list, quicknavigation-component', {
-                visible: true,
-                timeout: 30_000
-            });
+            try {
+                await app.Page.reload({ waitUntil: 'load', timeout: 45_000 });
+                await app.Page.waitForSelector('#page-content, #page-content-button-list, quicknavigation-component', {
+                    visible: true,
+                    timeout: 30_000
+                });
+                pageLoaded = true;
+            } catch {
+                pageLoaded = false;
+            }
         }
 
-        await sleep(2_000);
+        if (!pageLoaded) {
+            // Check if redirected to login page or session expired
+            const currentUrl = app.Page.url();
+            const isLoginPage = currentUrl.includes('/login') || 
+                                currentUrl.includes('Account/Login') || 
+                                ((await app.Page.$('iframe').catch(() => null)) !== null && (await app.Page.$('#userIdAndSubgroup2').catch(() => null)) === null);
 
-        // Verify booking loaded
-        const liveBookingNumber = await getBookingNumber(app);
-        console.log(`[openAndVerifyExistingBooking] Live booking detected: "${liveBookingNumber}", expected: "${bookingKey}"`);
+            if (isLoginPage) {
+                return {
+                    success: false,
+                    ref: "#SESSION_EXPIRED",
+                    message: "Century VMS session has expired or you have been logged out. Please restart and log in again."
+                };
+            }
 
-        // Check if page displays an error message or alert
-        const pageError = await app.Page.evaluate(() => {
-            const errBanner = document.querySelector('.alert-danger, .toast-error, .validation-summary-errors');
-            return errBanner ? errBanner.textContent?.trim() : null;
-        }).catch(() => null);
+            // Check if page displays an error message or alert banner
+            const errorBanner = await app.Page.evaluate(() => {
+                const el = document.querySelector('.alert-danger, .toast-error, .validation-summary-errors, .modal-content .text-danger');
+                return el ? el.textContent?.trim() : null;
+            }).catch(() => null);
 
-        if (pageError && !liveBookingNumber) {
+            if (errorBanner) {
+                return {
+                    success: false,
+                    ref: "#CENTURY_ERROR",
+                    message: `Century VMS reported: ${errorBanner}`
+                };
+            }
+
             return {
                 success: false,
-                ref: "#BOOKING_NOT_FOUND",
-                message: `Century VMS Error for Booking "${bookingKey}": ${pageError}`
+                ref: "#PAGE_TIMEOUT",
+                message: `Century VMS is taking too long to load. The site or your internet connection may be slow. (Booking: "${bookingKey}")`
+            };
+        }
+
+        // Verify the page really shows the requested booking (not the previous one).
+        let check = await waitForBookingNumber(app, bookingKey, 20_000);
+        if (!check.matched) {
+            console.log(`[openAndVerifyExistingBooking] Page shows "${check.lastSeen}" instead of "${bookingKey}", reloading...`);
+            try {
+                await app.Page.reload({ waitUntil: 'load', timeout: 45_000 });
+            } catch (reloadErr) {
+                console.warn(`[openAndVerifyExistingBooking] Reload warning:`, reloadErr);
+            }
+            check = await waitForBookingNumber(app, bookingKey, 30_000);
+        }
+        console.log(`[openAndVerifyExistingBooking] Live booking: "${check.lastSeen}", expected: "${bookingKey}", matched: ${check.matched}`);
+
+        if (!check.matched) {
+            const pageError = await app.Page.evaluate(() => {
+                const errBanner = document.querySelector('.alert-danger, .toast-error, .validation-summary-errors');
+                return errBanner ? errBanner.textContent?.trim() : null;
+            }).catch(() => null);
+
+            if (pageError) {
+                return {
+                    success: false,
+                    ref: "#BOOKING_NOT_FOUND",
+                    message: `Century VMS Error for Booking "${bookingKey}": ${pageError}`
+                };
+            }
+            return {
+                success: false,
+                ref: "#BOOKING_MISMATCH",
+                message: check.lastSeen
+                    ? `Century VMS kept showing booking "${check.lastSeen}" instead of "${bookingKey}". Skipped to avoid saving files for the wrong booking.`
+                    : `Booking "${bookingKey}" did not open in Century VMS. Check that the booking exists and the company code is correct.`
             };
         }
 
@@ -161,18 +236,217 @@ async function openAndVerifyExistingBooking(app: AppCreator, bookingKey: string,
             message: "OK",
             data: {
                 companyCode,
-                bookingKey: liveBookingNumber || bookingKey
+                bookingKey
             }
         };
 
     } catch (error) {
         console.error('[openAndVerifyExistingBooking error]', error);
+        let errorMsg = error instanceof Error ? error.message : "Unknown error while loading existing booking.";
+        let refCode = '#0E0F00';
+        if (errorMsg.toLowerCase().includes('timeout') || errorMsg.includes('waiting for selector')) {
+            refCode = '#PAGE_TIMEOUT';
+            errorMsg = `Century VMS is taking too long to load. The site or your internet connection may be slow. (Booking: "${bookingKey}")`;
+        }
         return {
             success: false,
-            ref: '#0E0F00',
-            message: error instanceof Error ? error.message : "Unknown error while loading existing booking."
+            ref: refCode,
+            message: errorMsg
         };
     }
+}
+
+export type PoItemSource = 'export' | 'api' | 'page-fetch' | 'grid-api' | 'dom';
+
+const PO_ITEM_PO_KEYS = ['PO #', 'PO No', 'PO Number', 'PO', 'po', 'poNo', 'po_no', 'po_number', 'PONumber', 'PoNo'];
+
+/** Returns the PO number stored on a single PO item row, or ''. */
+function getItemPo(itemRow: any): string {
+    if (!itemRow || typeof itemRow !== 'object') return '';
+    for (const key of PO_ITEM_PO_KEYS) {
+        const val = itemRow[key];
+        if (val !== undefined && val !== null && String(val).trim()) {
+            return String(val).trim();
+        }
+    }
+    return '';
+}
+
+async function openPoItemTab(app: AppCreator) {
+    try {
+        await app.Page.waitForSelector('li[id="#VobItemDetail"]', { timeout: 8_000 });
+        const tabEl = await app.Page.$('li[id="#VobItemDetail"]');
+        if (tabEl) {
+            await tabEl.click();
+        } else {
+            await app.Page.evaluate(() => {
+                const el = document.querySelector('li[id="#VobItemDetail"]') as HTMLElement;
+                if (el) el.click();
+            });
+        }
+    } catch {
+        await app.Page.evaluate(() => {
+            const el = document.querySelector('li[id="#VobItemDetail"]') as HTMLElement;
+            if (el) el.click();
+        }).catch(() => null);
+    }
+    await sleep(1500);
+
+    // Wait for grid rows to render or loading spinner to finish
+    try {
+        await app.Page.waitForFunction(() => {
+            const spinner = document.querySelector('grid-component span.ag-overlay-loading-center, .ag-overlay-loading-center');
+            const rows = document.querySelectorAll('grid-component div.ag-row, div.ag-center-cols-container div.ag-row');
+            const noRows = document.querySelector('.ag-overlay-no-rows-wrapper');
+            return (!spinner || (spinner as HTMLElement).offsetParent === null) && (rows.length > 0 || !!noRows);
+        }, { timeout: 15_000 });
+    } catch {
+        await sleep(2000);
+    }
+}
+
+/** 1. Clicks the PO grid's own export button and parses the downloaded file. */
+async function extractViaExportButton(app: AppCreator, downloadDir: string): Promise<any[] | null> {
+    let client: Awaited<ReturnType<Page['createCDPSession']>> | null = null;
+    try {
+        client = await app.Page.createCDPSession();
+        await client.send('Page.setDownloadBehavior', {
+            behavior: 'allow',
+            downloadPath: downloadDir
+        });
+
+        // Only visible buttons inside a visible grid (the PO Item tab); never "Download Template".
+        const exportBtnHandle = await app.Page.evaluateHandle(() => {
+            const isVisible = (el: Element) => (el as HTMLElement).offsetParent !== null;
+            const grids = Array.from(document.querySelectorAll('grid-component')).filter(isVisible);
+            for (const grid of grids) {
+                const btn = Array.from(grid.querySelectorAll('button')).filter(isVisible).find(b => {
+                    const title = (b.getAttribute('title') || '').toLowerCase();
+                    const text = (b.textContent || '').toLowerCase();
+                    const isExport = title.includes('export') || text.includes('export') || title.includes('excel') || text.includes('excel');
+                    const isTemplate = title.includes('template') || text.includes('template');
+                    return isExport && !isTemplate;
+                });
+                if (btn) return btn;
+            }
+            return null;
+        });
+
+        const exportButton = exportBtnHandle.asElement() as any;
+        if (!exportButton) return null;
+
+        console.log('[downloadPoItemFile] Found export button on PO items grid. Triggering browser export...');
+        const filesBefore = new Set(fs.readdirSync(downloadDir));
+        await exportButton.click();
+
+        const pollStart = Date.now();
+        while (Date.now() - pollStart < 15_000) {
+            await sleep(1000);
+            const newFiles = fs.readdirSync(downloadDir).filter(f =>
+                !filesBefore.has(f) && !f.endsWith('.crdownload') && !f.endsWith('.tmp')
+            );
+            if (newFiles.length === 0) continue;
+
+            const downloadedFile = path.join(downloadDir, newFiles[0]);
+            try {
+                const parsedWb = XLSX.read(fs.readFileSync(downloadedFile), { type: 'buffer' });
+                const firstSheetName = parsedWb.SheetNames[0];
+                if (firstSheetName && parsedWb.Sheets[firstSheetName]) {
+                    const rows = XLSX.utils.sheet_to_json(parsedWb.Sheets[firstSheetName], { defval: '' });
+                    if (Array.isArray(rows) && rows.length > 0) return rows;
+                }
+            } catch (parseErr) {
+                console.warn('[downloadPoItemFile] Error parsing exported file:', parseErr);
+            } finally {
+                try { fs.unlinkSync(downloadedFile); } catch {}
+            }
+            return null;
+        }
+        return null;
+    } catch (cdpErr) {
+        console.log('[downloadPoItemFile] Browser export failed:', cdpErr);
+        return null;
+    } finally {
+        if (client) {
+            try { await client.detach(); } catch {}
+        }
+    }
+}
+
+/** 3. Calls the SearchBookingItem API from inside the logged-in page. */
+async function extractViaPageFetch(app: AppCreator, bookingKey: string): Promise<any[] | null> {
+    const apiItems = await app.Page.evaluate(async (bKey) => {
+        try {
+            const url = `/api/Vob/Vob/SearchBookingItem?formId=1000015&whereClause=%7B%7D&bookingKey=${encodeURIComponent(bKey)}&isLoadSizeData=false`;
+            const res = await fetch(url, { credentials: 'include' });
+            if (!res.ok) return null;
+            const json = await res.json();
+            if (Array.isArray(json)) return json;
+            if (Array.isArray(json.GridDataTable)) return json.GridDataTable;
+            if (Array.isArray(json.ResultData)) return json.ResultData;
+            if (Array.isArray(json.data)) return json.data;
+            return null;
+        } catch {
+            return null;
+        }
+    }, bookingKey).catch(() => null);
+    return Array.isArray(apiItems) && apiItems.length > 0 ? apiItems : null;
+}
+
+/** 4. Reads row data from the AG-Grid JavaScript API (all rows, not just the visible ones). */
+async function extractViaGridApi(app: AppCreator): Promise<any[] | null> {
+    const rows = await app.Page.evaluate(() => {
+        const isVisible = (el: Element) => (el as HTMLElement).offsetParent !== null;
+        const gridElements = Array.from(document.querySelectorAll('grid-component, ag-grid-angular, div.ag-root-wrapper, div.ag-root')).filter(isVisible);
+        for (const el of gridElements) {
+            const anyEl = el as any;
+            const api = anyEl.__agGrid?.gridOptions?.api || anyEl.gridOptions?.api || anyEl.__agGridRecord?.gridOptions?.api;
+            if (api && typeof api.forEachNode === 'function') {
+                const out: any[] = [];
+                api.forEachNode((node: any) => {
+                    if (node && node.data) out.push(node.data);
+                });
+                if (out.length > 0) return out;
+            }
+        }
+        return null;
+    }).catch(() => null);
+    return Array.isArray(rows) && rows.length > 0 ? rows : null;
+}
+
+/**
+ * 5. Last resort: reads the rendered grid cells. AG-Grid only renders visible rows/columns,
+ * so this can be incomplete.
+ */
+async function extractViaDom(app: AppCreator): Promise<any[] | null> {
+    const rows = await app.Page.evaluate(() => {
+        const isVisible = (el: Element) => (el as HTMLElement).offsetParent !== null;
+        const root = Array.from(document.querySelectorAll('div.ag-root-wrapper')).find(isVisible) || document;
+
+        const headers: { colId: string; text: string }[] = [];
+        root.querySelectorAll('div.ag-header-cell').forEach(cell => {
+            const colId = cell.getAttribute('col-id') || cell.getAttribute('colid') || '';
+            const text = cell.querySelector('.ag-header-cell-text')?.textContent?.trim() || cell.textContent?.trim() || '';
+            if (colId && !colId.toLowerCase().includes('checkbox') && text && !headers.some(h => h.colId === colId)) {
+                headers.push({ colId, text });
+            }
+        });
+
+        // Rows are split across pinned/center containers; merge them by row-index.
+        const byIndex = new Map<string, any>();
+        root.querySelectorAll('div.ag-row').forEach(rowEl => {
+            const idx = rowEl.getAttribute('row-index') || rowEl.getAttribute('row-id') || String(byIndex.size);
+            const rowObj = byIndex.get(idx) || {};
+            headers.forEach(h => {
+                const cell = rowEl.querySelector(`div[col-id="${h.colId}"], div[colid="${h.colId}"]`);
+                if (cell) rowObj[h.text || h.colId] = cell.textContent?.trim() || '';
+            });
+            byIndex.set(idx, rowObj);
+        });
+
+        return Array.from(byIndex.values()).filter(r => Object.values(r).some(v => v !== ''));
+    }).catch(() => null);
+    return Array.isArray(rows) && rows.length > 0 ? rows : null;
 }
 
 async function downloadPoItemFile(
@@ -181,221 +455,71 @@ async function downloadPoItemFile(
     downloadDir: string,
     saveIndividualFile: boolean = true,
     vmaApiProvider?: CenturyAPIProvider
-): Promise<{ success: boolean; filePath?: string; rows?: any[]; message?: string }> {
+): Promise<{ success: boolean; filePath?: string; rows?: any[]; source?: PoItemSource; partial?: boolean; message?: string }> {
     try {
         console.log(`[downloadPoItemFile] Opening PO Item tab for booking: ${bookingKey}`);
-        try {
-            await app.Page.waitForSelector('li[id="#VobItemDetail"]', { timeout: 8_000 });
-            const tabEl = await app.Page.$('li[id="#VobItemDetail"]');
-            if (tabEl) {
-                await tabEl.click();
-            } else {
-                await app.Page.evaluate(() => {
-                    const el = document.querySelector('li[id="#VobItemDetail"]') as HTMLElement;
-                    if (el) el.click();
-                });
-            }
-        } catch {
-            await app.Page.evaluate(() => {
-                const el = document.querySelector('li[id="#VobItemDetail"]') as HTMLElement;
-                if (el) el.click();
-            }).catch(() => null);
-        }
-        await sleep(1500);
-
-        // Wait for grid rows to render or loading spinner to finish
-        try {
-            await app.Page.waitForFunction(() => {
-                const spinner = document.querySelector('grid-component span.ag-overlay-loading-center, .ag-overlay-loading-center');
-                const rows = document.querySelectorAll('grid-component div.ag-row, div.ag-center-cols-container div.ag-row');
-                const noRows = document.querySelector('.ag-overlay-no-rows-wrapper');
-                return (!spinner || (spinner as HTMLElement).offsetParent === null) && (rows.length > 0 || !!noRows);
-            }, { timeout: 15_000 });
-        } catch {
-            await sleep(2000);
-        }
+        await openPoItemTab(app);
 
         if (!fs.existsSync(downloadDir)) {
             fs.mkdirSync(downloadDir, { recursive: true });
         }
 
-        const safeKey = sanitize(bookingKey);
-        const targetFileName = `${safeKey}_PO_Items.xlsx`;
-        const targetFilePath = path.join(downloadDir, targetFileName);
+        let rows: any[] | null = null;
+        let source: PoItemSource | undefined;
 
-        let downloaded = false;
-        let extractedRows: any[] = [];
+        // Sources in order of completeness; the rendered-cells fallback comes last.
+        rows = await extractViaExportButton(app, downloadDir);
+        if (rows) source = 'export';
 
-        // 1. Try browser export button (strictly targeting export/excel buttons, NEVER "Download Template")
-        try {
-            const client = await app.Page.target().createCDPSession();
-            await client.send('Page.setDownloadBehavior', {
-                behavior: 'allow',
-                downloadPath: downloadDir
-            });
-
-            const exportBtnHandle = await app.Page.evaluateHandle(() => {
-                const buttons = Array.from(document.querySelectorAll('grid-component button, button'));
-                return buttons.find(b => {
-                    const title = (b.getAttribute('title') || '').toLowerCase();
-                    const text = (b.textContent || '').toLowerCase();
-                    const isExport = title.includes('export') || text.includes('export') || title.includes('excel') || text.includes('excel');
-                    const isTemplate = title.includes('template') || text.includes('template');
-                    return isExport && !isTemplate;
-                }) || null;
-            });
-
-            const exportButton = exportBtnHandle.asElement() as any;
-            if (exportButton) {
-                console.log('[downloadPoItemFile] Found legitimate export button on PO items grid. Triggering browser export...');
-                const filesBefore = new Set(fs.readdirSync(downloadDir));
-                await (exportButton as any).click();
-
-                const pollStart = Date.now();
-                while (Date.now() - pollStart < 15_000) {
-                    await sleep(1000);
-                    const filesAfter = fs.readdirSync(downloadDir);
-                    const newFiles = filesAfter.filter(f => !filesBefore.has(f) && !f.endsWith('.crdownload') && !f.endsWith('.tmp'));
-                    if (newFiles.length > 0) {
-                        const downloadedFile = path.join(downloadDir, newFiles[0]);
-                        try {
-                            const fileBuffer = fs.readFileSync(downloadedFile);
-                            const parsedWb = XLSX.read(fileBuffer, { type: 'buffer' });
-                            const firstSheetName = parsedWb.SheetNames[0];
-                            if (firstSheetName && parsedWb.Sheets[firstSheetName]) {
-                                const rows = XLSX.utils.sheet_to_json(parsedWb.Sheets[firstSheetName], { defval: '' });
-                                if (Array.isArray(rows) && rows.length > 0) {
-                                    extractedRows = rows;
-                                    downloaded = true;
-                                    console.log(`[downloadPoItemFile] Browser export parsed ${extractedRows.length} rows.`);
-                                }
-                            }
-
-                            if (downloadedFile !== targetFilePath && fs.existsSync(downloadedFile)) {
-                                try { fs.unlinkSync(downloadedFile); } catch {}
-                            }
-                        } catch (parseErr) {
-                            console.warn('[downloadPoItemFile] Error parsing exported file:', parseErr);
-                        }
-                        break;
-                    }
+        if (!rows && vmaApiProvider) {
+            try {
+                const apiRes = await vmaApiProvider.getAllBookingItems(bookingKey);
+                if (apiRes.found && Array.isArray(apiRes.data) && apiRes.data.length > 0) {
+                    rows = apiRes.data;
+                    source = 'api';
                 }
-            }
-        } catch (cdpErr) {
-            console.log('[downloadPoItemFile] Browser export trigger info:', cdpErr);
-        }
-
-        // 2. Direct Ag-Grid data extraction from page state (API or DOM)
-        if (!downloaded || extractedRows.length === 0) {
-            console.log('[downloadPoItemFile] Extracting PO item rows directly from Ag-Grid page state...');
-            const gridData = await app.Page.evaluate(() => {
-                // Check Ag-Grid JavaScript API on elements
-                const gridElements = Array.from(document.querySelectorAll('grid-component, ag-grid-angular, div.ag-root-wrapper, div.ag-root'));
-                for (const el of gridElements) {
-                    const anyEl = el as any;
-                    const api = anyEl.__agGrid?.gridOptions?.api || anyEl.gridOptions?.api || anyEl.__agGridRecord?.gridOptions?.api;
-                    if (api && typeof api.forEachNode === 'function') {
-                        const rows: any[] = [];
-                        api.forEachNode((node: any) => {
-                            if (node && node.data) rows.push(node.data);
-                        });
-                        if (rows.length > 0) {
-                            return { source: 'api', rows };
-                        }
-                    }
-                }
-
-                // Extract headers and cells from AgGrid DOM
-                const headerCells = Array.from(document.querySelectorAll('div.ag-header-cell'));
-                const headers: { colId: string; text: string }[] = [];
-                headerCells.forEach(cell => {
-                    const colId = cell.getAttribute('col-id') || cell.getAttribute('colid') || '';
-                    const text = cell.querySelector('.ag-header-cell-text')?.textContent?.trim() || cell.textContent?.trim() || '';
-                    if (colId && !colId.toLowerCase().includes('checkbox') && text) {
-                        headers.push({ colId, text });
-                    }
-                });
-
-                const rowElements = Array.from(document.querySelectorAll('div.ag-body-container div.ag-row, div.ag-center-cols-container div.ag-row'));
-                const rows: any[] = [];
-                rowElements.forEach(rowEl => {
-                    const rowObj: any = {};
-                    headers.forEach(h => {
-                        const cell = rowEl.querySelector(`div[col-id="${h.colId}"], div[colid="${h.colId}"]`);
-                        rowObj[h.text || h.colId] = cell?.textContent?.trim() || '';
-                    });
-                    if (Object.keys(rowObj).length > 0 && Object.values(rowObj).some(v => v !== '')) {
-                        rows.push(rowObj);
-                    }
-                });
-
-                return { source: 'dom', headers: headers.map(h => h.text || h.colId), rows };
-            });
-
-            if (gridData && Array.isArray(gridData.rows) && gridData.rows.length > 0) {
-                extractedRows = gridData.rows;
-                downloaded = true;
-                console.log(`[downloadPoItemFile] Extracted ${extractedRows.length} rows via ${gridData.source}.`);
+            } catch (apiErr) {
+                console.warn('[downloadPoItemFile] CenturyAPIProvider search item error:', apiErr);
             }
         }
 
-        // 3. Fallback: SearchBookingItem API call from active browser session or vmaApiProvider
-        if (!downloaded || extractedRows.length === 0) {
-            console.log('[downloadPoItemFile] Checking Century VMS SearchBookingItem API fallback...');
-            if (vmaApiProvider) {
-                try {
-                    const apiRes = await vmaApiProvider.getAllBookingItems(bookingKey);
-                    if (apiRes.found && Array.isArray(apiRes.data) && apiRes.data.length > 0) {
-                        extractedRows = apiRes.data;
-                        downloaded = true;
-                        console.log(`[downloadPoItemFile] CenturyAPIProvider returned ${extractedRows.length} rows.`);
-                    }
-                } catch (apiErr) {
-                    console.warn('[downloadPoItemFile] CenturyAPIProvider search item error:', apiErr);
-                }
-            }
-
-            if (!downloaded || extractedRows.length === 0) {
-                const apiItems = await app.Page.evaluate(async (bKey) => {
-                    try {
-                        const url = `/api/Vob/Vob/SearchBookingItem?formId=1000015&whereClause=%7B%7D&bookingKey=${encodeURIComponent(bKey)}&isLoadSizeData=false`;
-                        const res = await fetch(url, { credentials: 'include' });
-                        if (!res.ok) return null;
-                        const json = await res.json();
-                        if (Array.isArray(json)) return json;
-                        if (Array.isArray(json.GridDataTable)) return json.GridDataTable;
-                        if (Array.isArray(json.ResultData)) return json.ResultData;
-                        if (Array.isArray(json.data)) return json.data;
-                        return null;
-                    } catch {
-                        return null;
-                    }
-                }, bookingKey).catch(() => null);
-
-                if (Array.isArray(apiItems) && apiItems.length > 0) {
-                    extractedRows = apiItems;
-                    downloaded = true;
-                    console.log(`[downloadPoItemFile] Century VMS browser fetch returned ${extractedRows.length} PO item rows.`);
-                }
-            }
+        if (!rows) {
+            rows = await extractViaPageFetch(app, bookingKey);
+            if (rows) source = 'page-fetch';
         }
 
-        if (downloaded && extractedRows.length > 0) {
-            if (saveIndividualFile) {
-                const ws = XLSX.utils.json_to_sheet(extractedRows);
-                const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, 'PO Items');
-                writeWorkbookSafely(wb, targetFilePath);
-                console.log(`[downloadPoItemFile] Successfully saved clean individual XLSX: ${targetFilePath} (${extractedRows.length} rows)`);
-            }
-            return {
-                success: true,
-                filePath: saveIndividualFile ? targetFilePath : undefined,
-                rows: extractedRows
-            };
-        } else {
+        if (!rows) {
+            rows = await extractViaGridApi(app);
+            if (rows) source = 'grid-api';
+        }
+
+        if (!rows) {
+            rows = await extractViaDom(app);
+            if (rows) source = 'dom';
+        }
+
+        if (!rows || !source) {
             return { success: false, message: 'PO Item grid was empty or could not be exported.' };
         }
+
+        console.log(`[downloadPoItemFile] Got ${rows.length} PO item row(s) via ${source}.`);
+        const partial = source === 'dom';
+
+        const targetFilePath = path.join(downloadDir, `${sanitize(bookingKey)}_PO_Items.xlsx`);
+        if (saveIndividualFile) {
+            const ws = XLSX.utils.json_to_sheet(rows);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'PO Items');
+            writeWorkbookSafely(wb, targetFilePath);
+            console.log(`[downloadPoItemFile] Saved individual XLSX: ${targetFilePath} (${rows.length} rows)`);
+        }
+        return {
+            success: true,
+            filePath: saveIndividualFile ? targetFilePath : undefined,
+            rows,
+            source,
+            partial
+        };
 
     } catch (err: any) {
         console.error('[downloadPoItemFile error]', err);
@@ -490,6 +614,8 @@ export default async function issueBooking(app: AppCreator) {
     const combinedPoRows: any[] = [];
     const masterHeadersSet = new Set<string>(['Booking Number', 'PO Number']);
     let combinedBookingsCount = 0;
+    // Where PO item rows came from; different sources use different column names.
+    const poItemSources = new Set<PoItemSource>();
 
     app.LocalCom.progress.setTitleAndMessage('Booking Download', 'Downloading booking files from Century VMS.');
     app.LocalCom.sendData();
@@ -525,20 +651,20 @@ export default async function issueBooking(app: AppCreator) {
                 data.Message = "No row data found for this group.";
             } else {
                 const firstRow = data.data[0];
-                const poNumber = firstRow.po || "Unknown PO";
+                const poNumber = (firstRow.po || '').trim();
                 const bookingNumber = (firstRow.booking_number || (firstRow as any)['Booking Number'] || (firstRow as any)['Draft Booking No'] || '').trim();
 
                 if (isEmpty(bookingNumber)) {
                     throw {
                         known: true,
                         ref: "#MISSING_BOOKING_NUMBER",
-                        message: `Row group for PO "${poNumber}" is missing the required "Booking Number" in Excel.`
+                        message: `Row group for PO "${poNumber || 'Unknown PO'}" is missing the required "Booking Number" in Excel.`
                     };
                 }
 
                 data.booking_number = bookingNumber;
                 console.log(`\n========================================`);
-                console.log(`[issueBooking] Processing Booking: ${bookingNumber} (PO: ${poNumber})`);
+                console.log(`[issueBooking] Processing Booking: ${bookingNumber} (PO: ${poNumber || '-'})`);
                 console.log(`========================================`);
 
                 // 1. Open and verify booking in Century VMS
@@ -553,7 +679,8 @@ export default async function issueBooking(app: AppCreator) {
                     };
                 }
 
-                const liveBookingKey = verifyResp.data?.bookingKey || bookingNumber;
+                // The page was verified to show exactly this booking; always use the requested key.
+                const liveBookingKey = bookingNumber;
                 data.booking_number = liveBookingKey;
 
                 const liveStatus = await getBookingStatusFromPage(app);
@@ -573,29 +700,23 @@ export default async function issueBooking(app: AppCreator) {
                     if (poItemRes.success) {
                         data.po_item_file = combinePoItems && !keepIndividualFiles ? "Combined" : "Downloaded";
                         downloadResults.push(combinePoItems && !keepIndividualFiles ? `PO Items: Combined` : `PO Items: Saved`);
+                        if (poItemRes.partial) {
+                            downloadResults.push(`Warning: PO items read from the screen, may be incomplete`);
+                        }
+                        if (poItemRes.source) poItemSources.add(poItemRes.source);
 
                         if (Array.isArray(poItemRes.rows) && poItemRes.rows.length > 0) {
-                            // If PO number is missing or Unknown, infer from extracted PO items
-                            let detectedPo = (poNumber && poNumber !== 'Unknown PO') ? poNumber : '';
-                            if (!detectedPo) {
-                                for (const it of poItemRes.rows) {
-                                    const foundPo = it['PO #'] || it['PO No'] || it['po'] || it['poNo'] || it['PO Number'] || it['PONumber'] || it['PoNo'] || it['PO'];
-                                    if (foundPo && String(foundPo).trim()) {
-                                        detectedPo = String(foundPo).trim();
-                                        break;
-                                    }
-                                }
-                            }
-                            if (detectedPo && (!firstRow.po || firstRow.po === 'Unknown PO')) {
-                                firstRow.po = detectedPo;
+                            // POs actually present on the booking (a booking can hold several POs).
+                            const bookingPos = Array.from(new Set(poItemRes.rows.map(getItemPo).filter(Boolean)));
+                            if (!poNumber && bookingPos.length > 0) {
+                                firstRow.po = bookingPos.join(', ');
                             }
 
                             if (combinePoItems) {
                                 combinedBookingsCount++;
                                 for (const itemRow of poItemRes.rows) {
-                                    const rowPo = (detectedPo && detectedPo !== 'Unknown PO')
-                                        ? detectedPo
-                                        : (itemRow['PO #'] || itemRow['po'] || itemRow['poNo'] || itemRow['PO Number'] || itemRow['PO'] || '');
+                                    // Each item row keeps its own PO; the Excel PO is only a fallback.
+                                    const rowPo = getItemPo(itemRow) || poNumber;
                                     const rowObj: any = {
                                         'Booking Number': liveBookingKey,
                                         'PO Number': rowPo,
@@ -644,12 +765,13 @@ export default async function issueBooking(app: AppCreator) {
                 // Propagate values to all rows for UI table
                 if (Array.isArray(data.data)) {
                     for (const row of data.data) {
-                        row.po_status = data.po_status || "Completed";
+                        // Only the live booking status read from Century VMS; never a made-up value.
+                        row.po_status = data.po_status || '';
                         row.booking_number = data.booking_number;
                         if (data.booking_created) row.booking_created = data.booking_created;
                         if (data.po_item_file) row.po_item_file = data.po_item_file;
                         if (data.pdf_file) row.pdf_file = data.pdf_file;
-                        if (firstRow?.po && (!row.po || row.po === 'Unknown PO')) {
+                        if (firstRow?.po && !row.po) {
                             row.po = firstRow.po;
                         }
                         row.Success = data.Success;
@@ -667,13 +789,14 @@ export default async function issueBooking(app: AppCreator) {
             } else {
                 data.Message = String(e || 'Unknown error occurred.');
             }
-            data.po_status = "Failed";
+            // A failed download is reported via Success/Message only; the booking status stays
+            // whatever was read from Century VMS (or empty if the booking never loaded).
             if (Array.isArray(data.data)) {
                 for (const row of data.data) {
-                    row.po_status = "Failed";
+                    row.po_status = data.po_status || '';
                     if (data.booking_number) row.booking_number = data.booking_number;
                     if (data.booking_created) row.booking_created = data.booking_created;
-                    if (data.data[0]?.po && (!row.po || row.po === 'Unknown PO')) {
+                    if (data.data[0]?.po && !row.po) {
                         row.po = data.data[0].po;
                     }
                     row.Success = false;
@@ -755,6 +878,15 @@ export default async function issueBooking(app: AppCreator) {
                     title: 'Combined Excel File Created',
                     message: `Combined ${combinedPoRows.length} PO Item row(s) from ${combinedBookingsCount} booking(s) into single file:\n${combinedFileName}`
                 }]);
+
+                if (poItemSources.size > 1) {
+                    await app.LocalCom.sendData(undefined, [{
+                        channel: app.LocalCom.progress.channel,
+                        type: 'w',
+                        title: 'Mixed PO Item Sources',
+                        message: `PO items were read in different ways (${Array.from(poItemSources).join(', ')}), so the combined file may contain differently named columns for some bookings.`
+                    }]);
+                }
             } catch (combErr) {
                 console.error('[issueBooking] Error writing combined Excel file:', combErr);
                 await app.LocalCom.sendData(undefined, [{

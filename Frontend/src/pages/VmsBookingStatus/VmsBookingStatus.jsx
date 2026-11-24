@@ -270,7 +270,9 @@ export default function VmsBookingStatus() {
                             if (d.Success !== undefined) matched.download_success = d.Success;
                             if (d.Message) matched.download_message = d.Message;
                             if (d.Success !== undefined) matched.download_status = d.Success ? 'Success' : 'Failed';
-                            if (d.po_status) matched.status = d.po_status;
+                            // po_status is the live booking status read from Century VMS (empty if unknown).
+                            const liveStatus = String(d.po_status || '').replace(/booking/i, '').trim();
+                            if (liveStatus) matched.status = liveStatus;
                         }
                     });
                     return Array.from(rowMap.values());
@@ -535,7 +537,8 @@ export default function VmsBookingStatus() {
                 comp_cd: String(r.comp_cd || r.compCd || '').trim() || (companyCode ? companyCode.split('-')[0].trim() : '589'),
                 vendor_cd: String(r.vendor_cd || r.vendorCd || '').trim(),
                 status: String(r.status || '').trim(),
-                po: String(r.booking_key || r.booking_key_for_export || '').trim(),
+                // Grid rows have no PO; the backend detects POs from the booking's PO items.
+                po: String(r.po || '').trim(),
             }));
 
             const res = await window?.engine?.startProcess({

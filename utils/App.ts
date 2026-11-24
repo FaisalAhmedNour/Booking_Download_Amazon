@@ -8,7 +8,7 @@ import { devArg } from "../devArg";
 import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
 import axios from "axios";
-import { DataManager, MemoryDataManager } from "./DataManager";
+import { DataManager, DataManagerError, MemoryDataManager } from "./DataManager";
 import { writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -118,15 +118,38 @@ export class AppCreator{
                             this.dateManager = new DataManager(this.initData.excelFile);
                             await this.dateManager.init();
                         } catch (error) {
-                            this.LocalCom.sendData(undefined, [
+                            console.error('[App] Excel parse error:', error);
+                            const message = error instanceof DataManagerError
+                                ? error.message
+                                : "Invalid excel format. Use the format provided by UIC.";
+                            this.LocalCom.progress.setTitleAndMessage('Error', message);
+                            await this.LocalCom.sendData(undefined, [
                                 {
                                     channel: "d",
                                     type: "e",
                                     title: "Error",
-                                    message: "Invalid excel format. Use the format provided by UIC."
+                                    message
                                 }
                             ]);
                             return;
+                        }
+                        if (this.dateManager.length === 0) {
+                            const message = "No booking numbers were found in the Excel file's 'Booking Number' column.";
+                            this.LocalCom.progress.setTitleAndMessage('Error', message);
+                            await this.LocalCom.sendData(undefined, [
+                                { channel: "d", type: "e", title: "Error", message }
+                            ]);
+                            return;
+                        }
+                        if (this.dateManager.skippedRows > 0) {
+                            await this.LocalCom.sendData(undefined, [
+                                {
+                                    channel: "d",
+                                    type: "w",
+                                    title: "Rows Skipped",
+                                    message: `${this.dateManager.skippedRows} Excel row(s) have no Booking Number and were skipped.`
+                                }
+                            ]);
                         }
                     } else {
                         this.LocalCom.progress.setTitleAndMessage('Error', "Invalid Excel Path or No Bookings.");
