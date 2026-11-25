@@ -745,7 +745,9 @@ export class CenturyAPIProvider{
     async getAllBookingItems(bookingKey:string):Promise<{found:boolean;message?:string;data?:any[]}>{
         try {
             const url=`/Vob/Vob/SearchBookingItem?formId=1000015&whereClause=%7B%7D&bookingKey=${encodeURIComponent(bookingKey)}&isLoadSizeData=false`;
+            // Without a timeout a request Century never answers would block the run forever.
             const resp=await this.instance.get(url,{
+                timeout:30_000,
                 headers:{
                     Origin:"https://www.centuryvms.com",
                     Referer:"https://www.centuryvms.com/"

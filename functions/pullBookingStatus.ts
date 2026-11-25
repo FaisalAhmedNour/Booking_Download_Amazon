@@ -1,6 +1,7 @@
 import { AppCreator } from "../utils/App";
 import { sleep } from "../utils/common";
 import { CenturyAPIProvider } from "../utils/century.api.provider";
+import { VmsStatusStore } from "../utils/vmsStatusStore";
 
 export default async function pullBookingStatus(app: AppCreator) {
     try {
@@ -18,10 +19,10 @@ export default async function pullBookingStatus(app: AppCreator) {
 
         // Navigate to the online booking status page layout
         const targetPageUrl = "https://www.centuryvms.com/#/pagelayout?moduleCd=Vob&configName=VobVendorOnlineBookingStatusRtn";
-        await app.Page.goto(targetPageUrl, { timeout: 60_000 });
-        await sleep(15_000);
-        await app.Page.reload({ waitUntil: "load" });
-        await sleep(5_000);
+        const portalReady = await app.openPortalPage(targetPageUrl);
+        if (!portalReady) {
+            console.warn('[pullBookingStatus] Century VMS access token not found; API calls may fail.');
+        }
 
         app.LocalCom.progress.setTitleAndMessage(
             "Extracting Token",
@@ -97,7 +98,15 @@ export default async function pullBookingStatus(app: AppCreator) {
 
         let totalBookingsPulled = 0;
         let successfulStatuses = 0;
+        // Set when the session controller says stop (user stop or balance exhausted).
+        let stopMessage: string | null = null;
         const STREAM_CHUNK_SIZE = 30; // Progressive chunk size for real-time frontend streaming
+
+        // Saved to the UIC backend so the VMS Booking Status tab can reload it later.
+        const store = new VmsStatusStore(app);
+        const runStartedAt = new Date().toISOString();
+        // Only a pull where every status was fetched may hide bookings that disappeared.
+        let allStatusesFetched = true;
 
         for (let i = 0; i < statusList.length; i++) {
             const item = statusList[i];
@@ -140,6 +149,15 @@ export default async function pullBookingStatus(app: AppCreator) {
                             rownum: r.rownum || (idx + 1)
                         }));
 
+                        // Persist only rows with a real booking key (not the BK_<status>_<n> placeholder).
+                        const rowsToSave = enrichedRows.filter((_: any, idx: number) => {
+                            const r = rawRows[idx];
+                            return r && (r.booking_key || r.booking_key_for_export || r.customer_booking_number || r.customBookingId);
+                        });
+                        if (rowsToSave.length > 0) {
+                            await store.saveRows(rowsToSave, runStartedAt);
+                        }
+
                         // Stream rows to frontend immediately in progressive chunks (like Booking Correction tab)
                         for (let cIdx = 0; cIdx < enrichedRows.length; cIdx += STREAM_CHUNK_SIZE) {
                             const chunk = enrichedRows.slice(cIdx, cIdx + STREAM_CHUNK_SIZE);
@@ -157,6 +175,7 @@ export default async function pullBookingStatus(app: AppCreator) {
                             const resp = await app.LocalCom.progress.registerSuccess(chunk.length);
                             if (resp && resp.continue === false) {
                                 console.warn(`[pullBookingStatus] Streaming stopped by session controller: ${resp.message}`);
+                                stopMessage = resp.message || 'Stopped by session controller.';
                                 break;
                             }
 
@@ -165,14 +184,17 @@ export default async function pullBookingStatus(app: AppCreator) {
                         }
 
                         // Message upon finishing this status
-                        await app.LocalCom.sendData(undefined, [{
-                            channel: app.LocalCom.progress.channel,
-                            type: 'n',
-                            title: `Streamed: ${statusKey}`,
-                            message: `Successfully streamed all ${rawRows.length} bookings for "${statusKey}".`
-                        }]);
+                        if (!stopMessage) {
+                            await app.LocalCom.sendData(undefined, [{
+                                channel: app.LocalCom.progress.channel,
+                                type: 'n',
+                                title: `Streamed: ${statusKey}`,
+                                message: `Successfully streamed all ${rawRows.length} bookings for "${statusKey}".`
+                            }]);
+                        }
                     }
                 } else {
+                    allStatusesFetched = false;
                     console.warn(`[pullBookingStatus] Could not fetch grid for status "${statusKey}": ${gridResult.message}`);
                     await app.LocalCom.sendData(undefined, [{
                         channel: app.LocalCom.progress.channel,
@@ -182,11 +204,40 @@ export default async function pullBookingStatus(app: AppCreator) {
                     }]);
                 }
             } catch (statusErr: any) {
+                allStatusesFetched = false;
                 console.error(`[pullBookingStatus] Error fetching status "${statusKey}":`, statusErr);
             }
 
+            // Stop or balance exhausted: do not continue with the remaining statuses.
+            if (stopMessage) break;
+
             // Small pause between status requests to avoid rate limits
             await sleep(1000);
+        }
+
+        // Report the last (< buffer size) counts that are still buffered.
+        try {
+            await app.LocalCom.progress.flushBuffer();
+        } catch (flushErr) {
+            console.warn('[pullBookingStatus] Failed to flush progress buffer:', flushErr);
+        }
+
+        if (stopMessage) {
+            app.LocalCom.progress.setTitleAndMessage("Stopped.", stopMessage);
+            await app.LocalCom.sendData(undefined, [{
+                channel: app.LocalCom.progress.channel,
+                type: 'e',
+                title: 'Stopped.',
+                message: `${stopMessage} (${totalBookingsPulled} bookings pulled before stopping.)`
+            }]);
+            return;
+        }
+
+        // Complete pull and everything saved: hide saved bookings that VMS no longer returns.
+        if (allStatusesFetched && store.allSaved) {
+            await store.finalize(runStartedAt);
+        } else {
+            console.log(`[pullBookingStatus] Skipping finalize (allStatusesFetched=${allStatusesFetched}, allSaved=${store.allSaved}).`);
         }
 
         console.log(`[pullBookingStatus] Finished pulling all statuses. Total records: ${totalBookingsPulled}`);

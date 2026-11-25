@@ -6,6 +6,7 @@ import { DataManager, MemoryDataManager } from './utils/DataManager';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import axios from 'axios';
 
 // Load config from EngineTestConfig.json or fallback
 let config: any = {};
@@ -77,8 +78,8 @@ async function runLocalTest() {
     // 2. Setup Init Data
     app.initData = {
         mode: isPullStatus ? 'pull_status' : isDownloadSelected ? 'download_selected' : 'download_po',
-        userName: config.initData?.userName || 'AMZ1599-0',
-        password: config.initData?.password || 'Epic@123456',
+        userName: config.initData?.userName || process.env.CENTURY_VMS_USER || '',
+        password: config.initData?.password || process.env.CENTURY_VMS_PASSWORD || '',
         excelFile: excelPath,
         bookings: selectedBookings,
         downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : path.join(os.homedir(), 'Downloads')),
@@ -92,6 +93,12 @@ async function runLocalTest() {
             downloadDir: config.initData?.settings?.downloadDir || config.initData?.downloadDir || (excelPath ? path.dirname(excelPath) : path.join(os.homedir(), 'Downloads'))
         }
     };
+
+    if (!app.initData.userName || !app.initData.password) {
+        console.error('❌ Century VMS credentials missing. Set initData.userName/password in EngineTestConfig.json '
+            + '(copy EngineTestConfig.example.json) or the CENTURY_VMS_USER / CENTURY_VMS_PASSWORD env vars.');
+        process.exit(1);
+    }
 
     console.log(`👤 User: ${app.initData.userName}`);
     if (isPullStatus) {
@@ -142,8 +149,28 @@ async function runLocalTest() {
                     console.log(`[FAIL] Failed ${count} item(s)`);
                     return Promise.resolve({ continue: true, message: 'Fail' });
                 },
+                flushBuffer: () => {
+                    console.log('[PROGRESS] Flushed progress buffer');
+                    return Promise.resolve({ continue: true, message: 'OK' });
+                },
                 getObj: () => ({ channel: 'd' })
             },
+            // Stand-in for the engine proxy: calls the UIC backend directly when
+            // EngineTestConfig.json has baseUrl + apiKey; otherwise saving is skipped.
+            Proxy: (config.baseUrl && config.apiKey) ? (() => {
+                const http = axios.create({
+                    baseURL: String(config.baseUrl).replace(/\/+$/, ''),
+                    headers: { Authorization: `Bearer ${config.apiKey}` },
+                    validateStatus: (s: number) => s < 500,
+                    timeout: 15000,
+                });
+                return {
+                    get: (url: string) => http.get(url),
+                    post: (url: string, data: unknown) => http.post(url, data),
+                    patch: (url: string, data: unknown) => http.patch(url, data),
+                    delete: (url: string, data: unknown) => http.delete(url, { data }),
+                };
+            })() : undefined,
             sendData: (tableData: any, messages: any, log: any) => {
                 if (messages && messages.length > 0) {
                     for (const m of messages) {

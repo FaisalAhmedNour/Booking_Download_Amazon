@@ -274,6 +274,65 @@ export const fetchVmsGridData = async (status, options = {}) => {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Saved data on the UIC backend (/api/process/CenturyVmsStatus), via the engine proxy.
+// The backend module saves rows while it pulls; the UI only reads and clears.
+// ---------------------------------------------------------------------------
+const SAVED_STATUS_API = '/process/CenturyVmsStatus';
+const SAVED_PAGE_SIZE = 1000;
+const SAVED_MAX_PAGES = 50;
+
+const proxyRequest = async (url, method, payload) => {
+    if (typeof window?.engine?.Proxy !== 'function') {
+        return { ok: false, unavailable: true, message: 'UIC Engine connection is not available.' };
+    }
+    try {
+        const res = await window.engine.Proxy(url, method, payload);
+        const body = res?.data;
+        if (body?.success === true) return { ok: true, body };
+        return { ok: false, message: body?.message || `Server returned ${res?.status ?? 'no response'}.` };
+    } catch (err) {
+        return { ok: false, message: err?.message || String(err) };
+    }
+};
+
+/**
+ * Loads saved booking rows and the status summary of the user's company.
+ * @returns {Promise<{success: boolean, rows?: any[], summary?: any[], lastPulledAt?: string|null, error?: string, unavailable?: boolean}>}
+ */
+export const loadSavedVmsData = async () => {
+    const summaryRes = await proxyRequest(`${SAVED_STATUS_API}/summary`, 'get', null);
+    if (!summaryRes.ok) {
+        return { success: false, error: summaryRes.message, unavailable: summaryRes.unavailable };
+    }
+
+    const rows = [];
+    for (let page = 1; page <= SAVED_MAX_PAGES; page++) {
+        const res = await proxyRequest(`${SAVED_STATUS_API}?page=${page}&limit=${SAVED_PAGE_SIZE}`, 'get', null);
+        if (!res.ok) {
+            return { success: false, error: res.message };
+        }
+        rows.push(...(Array.isArray(res.body.data) ? res.body.data : []));
+        const totalPages = Number(res.body.pagination?.totalPages) || 0;
+        if (page >= totalPages) break;
+    }
+
+    return {
+        success: true,
+        rows,
+        summary: Array.isArray(summaryRes.body.data) ? summaryRes.body.data : [],
+        lastPulledAt: summaryRes.body.lastPulledAt || null,
+    };
+};
+
+/** Deletes all saved booking rows of the user's company. */
+export const clearSavedVmsData = async () => {
+    const res = await proxyRequest(SAVED_STATUS_API, 'delete', null);
+    return res.ok
+        ? { success: true, deleted: res.body.deleted || 0 }
+        : { success: false, error: res.message, unavailable: res.unavailable };
+};
+
 export const formatVmsDate = (dateVal, format = 'DD-MMM-YYYY') => {
     if (!dateVal) return '-';
     const m = moment(dateVal);

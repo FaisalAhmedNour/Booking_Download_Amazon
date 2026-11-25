@@ -127,7 +127,8 @@ export default function DownloadSelectedModal({
 
         onStartDownload({
             userName: userName.trim(),
-            password: password.trim(),
+            // Sent as typed: spaces can be part of a password.
+            password,
             companyCode,
             downloadDir: downloadDir.trim(),
             downloadPoItems,

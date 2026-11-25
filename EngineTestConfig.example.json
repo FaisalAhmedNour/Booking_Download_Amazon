@@ -1,0 +1,18 @@
+{
+    "port": 4056,
+    "apiKey": "<UIC user JWT, only needed to test saving to the UIC backend>",
+    "baseUrl": "https://uicommercial.com/api",
+    "initData": {
+        "excelFile": "C:\\path\\to\\Bookings.xlsx",
+        "userName": "<Century VMS username>",
+        "password": "<Century VMS password>",
+        "settings": {
+            "companyCode": "589 - Amazon Multi Country Consolidation Thailand",
+            "downloadPoItems": true,
+            "combinePoItems": true,
+            "keepIndividualFiles": true,
+            "downloadPdf": false,
+            "downloadDir": "C:\\path\\to\\download\\folder"
+        }
+    }
+}

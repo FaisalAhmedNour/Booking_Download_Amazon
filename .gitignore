@@ -35,3 +35,5 @@ log
 sea-prep.blob
 UI
 test
+# Local test config with real credentials (copy EngineTestConfig.example.json)
+EngineTestConfig.json

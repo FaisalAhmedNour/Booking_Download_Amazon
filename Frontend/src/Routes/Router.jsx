@@ -1,27 +1,15 @@
 import { createMemoryRouter } from "react-router-dom";
 import Main from "../Layouts/Main/Main";
-import DownloadPO from "../pages/DownloadPO/DownloadPO";
-import BookingBuilder from "../pages/BookingBuilder/BookingBuilder";
-import VmsBookingStatus from "../pages/VmsBookingStatus/VmsBookingStatus";
 
+// Pages are rendered by Main and kept mounted (see Main.jsx); routes only drive
+// which one is visible and the active nav link.
 export const router = createMemoryRouter([
     {
         path: "/",
         element: <Main />,
         children: [
-            {
-                path: "/",
-                element: <DownloadPO />
-            },
-            {
-                path: "/builder",
-                element: <BookingBuilder />
-            },
-            {
-                path: "/vms-status",
-                element: <VmsBookingStatus />
-            }
+            { path: "/", element: null },
+            { path: "/vms-status", element: null },
         ]
     }
 ]);
-

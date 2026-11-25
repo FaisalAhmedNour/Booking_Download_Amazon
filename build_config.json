@@ -17,6 +17,6 @@
         "skip":false
     },
     "publish":{
-        "skip":false
+        "skip":true
     }
 }

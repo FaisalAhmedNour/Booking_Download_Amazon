@@ -4,11 +4,10 @@ import puppeteer from "puppeteer-extra";
 import { getAnyEdgeStable } from "./edge-path";
 import { dirExists, fileExists, fileReadOK, isEmpty, sleep } from "./common";
 import { IInitData } from "./types";
-import { devArg } from "../devArg";
 import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
 import axios from "axios";
-import { DataManager, MemoryDataManager } from "./DataManager";
+import { DataManager, DataManagerError, MemoryDataManager } from "./DataManager";
 import { writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -89,7 +88,7 @@ export class AppCreator{
                         const bookingList = this.initData.bookings || this.initData.bookingNumbers || [];
                         if (bookingList.length === 0) {
                             this.LocalCom.progress.setTitleAndMessage('Error', "No bookings selected for download.");
-                            this.LocalCom.sendData(undefined, [
+                            await this.LocalCom.sendData(undefined, [
                                 {
                                     channel: "d",
                                     type: "e",
@@ -104,7 +103,7 @@ export class AppCreator{
                     } else if (fileExists(this.initData.excelFile)) {
                         if (!fileReadOK(this.initData.excelFile)) {
                             this.LocalCom.progress.setTitleAndMessage('Error', "Access blocked by Windows or Other app.");
-                            this.LocalCom.sendData(undefined, [
+                            await this.LocalCom.sendData(undefined, [
                                 {
                                     channel: "d",
                                     type: "e",
@@ -118,19 +117,42 @@ export class AppCreator{
                             this.dateManager = new DataManager(this.initData.excelFile);
                             await this.dateManager.init();
                         } catch (error) {
-                            this.LocalCom.sendData(undefined, [
+                            console.error('[App] Excel parse error:', error);
+                            const message = error instanceof DataManagerError
+                                ? error.message
+                                : "Invalid excel format. Use the format provided by UIC.";
+                            this.LocalCom.progress.setTitleAndMessage('Error', message);
+                            await this.LocalCom.sendData(undefined, [
                                 {
                                     channel: "d",
                                     type: "e",
                                     title: "Error",
-                                    message: "Invalid excel format. Use the format provided by UIC."
+                                    message
                                 }
                             ]);
                             return;
                         }
+                        if (this.dateManager.length === 0) {
+                            const message = "No booking numbers were found in the Excel file's 'Booking Number' column.";
+                            this.LocalCom.progress.setTitleAndMessage('Error', message);
+                            await this.LocalCom.sendData(undefined, [
+                                { channel: "d", type: "e", title: "Error", message }
+                            ]);
+                            return;
+                        }
+                        if (this.dateManager.skippedRows > 0) {
+                            await this.LocalCom.sendData(undefined, [
+                                {
+                                    channel: "d",
+                                    type: "w",
+                                    title: "Rows Skipped",
+                                    message: `${this.dateManager.skippedRows} Excel row(s) have no Booking Number and were skipped.`
+                                }
+                            ]);
+                        }
                     } else {
                         this.LocalCom.progress.setTitleAndMessage('Error', "Invalid Excel Path or No Bookings.");
-                        this.LocalCom.sendData(undefined, [
+                        await this.LocalCom.sendData(undefined, [
                             {
                                 channel: "d",
                                 type: "e",
@@ -145,7 +167,7 @@ export class AppCreator{
                 
             if(isEmpty(this.initData.userName)){
                 this.LocalCom.progress.setTitleAndMessage('Error',"Username is Required.")
-                this.LocalCom.sendData(undefined,[
+                await this.LocalCom.sendData(undefined,[
                     {
                         channel: "d",
                         type: "e",
@@ -157,7 +179,7 @@ export class AppCreator{
             }
             if(isEmpty(this.initData.password)){
                 this.LocalCom.progress.setTitleAndMessage('Error',"Password is Required.")
-                this.LocalCom.sendData(undefined,[
+                await this.LocalCom.sendData(undefined,[
                     {
                         channel: "d",
                         type: "e",
@@ -170,7 +192,7 @@ export class AppCreator{
                 
             }else{
                 this.LocalCom.progress.setTitleAndMessage('Error',"Invalid action.")
-                this.LocalCom.sendData(undefined,[
+                await this.LocalCom.sendData(undefined,[
                     {
                         channel: "d",
                         type: "e",
@@ -187,7 +209,7 @@ export class AppCreator{
             console.log(error)
             console.log("error")
             this.LocalCom.progress.setTitleAndMessage('Failed',"Failed to initiate app.")
-            this.LocalCom.sendData(undefined,[
+            await this.LocalCom.sendData(undefined,[
                 {
                     channel: "d",
                     type: "e",
@@ -296,6 +318,58 @@ export class AppCreator{
             return conf;
         });
         return session
+    }
+
+    /**
+     * Opens a Century VMS page and waits until the portal's access token is in
+     * sessionStorage (needed by createSession). Reloads once if it does not appear.
+     * Replaces fixed sleeps; returns false if the token never showed up.
+     */
+    async openPortalPage(url: string, timeoutMs: number = 45_000): Promise<boolean> {
+        try {
+            await this.Page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+        } catch (err) {
+            console.warn(`[openPortalPage] Navigation warning for ${url}:`, err);
+        }
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const ready = await this.Page.waitForFunction(() => {
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const key = sessionStorage.key(i);
+                    if (key && key.includes("user:")) {
+                        try {
+                            const data = JSON.parse(sessionStorage.getItem(key) || 'null');
+                            if (data && data.access_token) return true;
+                        } catch { /* ignore */ }
+                    }
+                }
+                return false;
+            }, { timeout: timeoutMs, polling: 1000 }).then(() => true).catch(() => false);
+            if (ready) {
+                // Let the SPA finish its first render before automation continues.
+                await sleep(3_000);
+                return true;
+            }
+            console.log(`[openPortalPage] Access token not found yet, reloading (attempt ${attempt + 1})...`);
+            try {
+                await this.Page.reload({ waitUntil: 'load', timeout: 60_000 });
+            } catch (err) {
+                console.warn('[openPortalPage] Reload warning:', err);
+            }
+        }
+        return false;
+    }
+
+    /** Closes the browser if it was opened; never throws and never hangs longer than 10s. */
+    async closeBrowser(): Promise<void> {
+        if (!this.Browser) return;
+        try {
+            await Promise.race([
+                this.Browser.close(),
+                new Promise(res => setTimeout(res, 10_000)),
+            ]);
+        } catch (err) {
+            console.warn('[closeBrowser] Error closing browser:', err);
+        }
     }
 }
 

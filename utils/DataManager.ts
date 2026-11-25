@@ -1,94 +1,179 @@
 import {Workbook, Worksheet} from "exceljs";
 import * as Path from 'path';
-import { isEmpty, sleep } from "./common";
-import { ColumnAlias, IDataFormExcel } from "./types";
+import { isEmpty } from "./common";
+import { IDataFormExcel } from "./types";
 
-function getCellValueFromCell(cell: any): string {
+/** Error with a message that is safe to show to the user as-is. */
+export class DataManagerError extends Error {}
+
+/** Columns whose bare numbers may be Excel date serials. */
+const DATE_COLUMNS = new Set(['working_date', 'window_end', 'ecdd']);
+
+/** Header row is scanned only in the first N rows of a sheet. */
+const MAX_HEADER_SCAN_ROWS = 30;
+
+function excelSerialToIso(v: number): string | null {
+    const excelEpoch = Date.UTC(1899, 11, 30);
+    const date = new Date(excelEpoch + v * 86400000);
+    if (!isNaN(date.getTime()) && date.getUTCFullYear() >= 2000 && date.getUTCFullYear() <= 2100) {
+        return date.toISOString();
+    }
+    return null;
+}
+
+function getCellValueFromCell(cell: any, isDateColumn: boolean = false): string {
     if (!cell) return '';
 
     const v = cell.value;
     if (v === null || v === undefined) {
-        return (cell.text || '').trim();
+        return String(cell.text ?? '').trim();
     }
 
     if (v instanceof Date) {
-        if (!isNaN(v.getTime())) {
-            return v.toISOString();
-        }
+        return isNaN(v.getTime()) ? '' : v.toISOString();
     }
 
     if (typeof v === 'object') {
         if (Array.isArray(v.richText)) {
             return v.richText.map((t: any) => t.text || '').join('').trim();
         }
-        if ('result' in v) {
-            const res = v.result;
-            if (res instanceof Date && !isNaN(res.getTime())) {
-                return res.toISOString();
-            }
-            return String(res ?? '').trim();
+        // Formula cells (incl. shared formulas that carry no cached result of their own)
+        if ('formula' in v || 'sharedFormula' in v || 'result' in v) {
+            const res = 'result' in v ? v.result : cell.result;
+            if (res instanceof Date) return isNaN(res.getTime()) ? '' : res.toISOString();
+            if (res === null || res === undefined || typeof res === 'object') return '';
+            if (typeof res === 'number' && isDateColumn) return excelSerialToIso(res) ?? String(res);
+            return String(res).trim();
         }
         if ('text' in v) {
             return String(v.text ?? '').trim();
         }
+        if ('error' in v) {
+            return '';
+        }
+        const text = String(cell.text ?? '').trim();
+        return text === '[object Object]' ? '' : text;
     }
 
     if (typeof v === 'number') {
-        // Check if number is an Excel date serial (typically between 30000 and 60000)
-        if (cell.type === 4 /* Date */ || (cell.numFmt && /yy|mm|dd/i.test(cell.numFmt)) || (v > 30000 && v < 60000)) {
-            const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-            const date = new Date(excelEpoch.getTime() + v * 86400000);
-            if (!isNaN(date.getTime()) && date.getFullYear() >= 2000 && date.getFullYear() <= 2100) {
-                return date.toISOString();
-            }
+        // Only treat a number as a date when Excel says so (date format) or the column is a date column.
+        const hasDateFormat = typeof cell.numFmt === 'string' && /(yy|dd|mmm)/i.test(cell.numFmt);
+        if (hasDateFormat || isDateColumn) {
+            const iso = excelSerialToIso(v);
+            if (iso) return iso;
         }
         return String(v).trim();
     }
 
     const str = String(v).trim();
     if (str) return str;
-    return (cell.text || '').trim();
+    return String(cell.text ?? '').trim();
 }
 
-function matchColumnAlias(rawHeader: string): string | null {
-    const norm = rawHeader.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+const BOOKING_EXACT = new Set([
+    'booking', 'bookings', 'booking number', 'booking no', 'booking no.', 'booking #', 'booking key', 'booking id',
+    'draft booking no', 'draft booking no.', 'draft booking number', 'vob', 'vob no', 'vob no.', 'vob number',
+    'bk', 'bk no', 'bk no.', 'bk #',
+]);
+
+type AliasMatch = { alias: string; exact: boolean };
+
+function normalizeHeader(rawHeader: string): string {
+    return rawHeader.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function matchColumnAlias(rawHeader: string): AliasMatch | null {
+    const norm = normalizeHeader(rawHeader);
     if (!norm) return null;
 
-    if (norm === 'sl no' || norm === 'sl' || norm === 'serial number' || norm === 'sl. no' || norm === 'sl_no') return 'sl';
-    if (
-        norm === 'booking' ||
-        norm === 'bookings' ||
-        norm.includes('booking') ||
-        norm.includes('vob')
-    ) return 'booking_number';
-    if (norm.includes('working date')) return 'working_date';
-    if (norm.includes('ship mode')) return 'ship_mode';
-    if (norm.includes('freight type')) return 'freight_type';
-    if (norm.includes('incoterm')) return 'incoterms';
-    if (norm.includes('fob port') || norm === 'fob') return 'fob_port';
-    if (norm.includes('order type')) return 'order_type';
-    if (norm === 'po' || norm === 'po #' || norm === 'po no' || norm === 'po number') return 'po';
-    if (norm.includes('asin')) return 'asin';
-    if (norm.includes('model')) return 'model';
-    if (norm.includes('po qty') || norm.includes('po quantity') || norm.includes('booked units')) return 'po_quantity';
-    if (norm.includes('case pack')) return 'case_pack';
-    if (norm.includes('carton qty') || norm.includes('carton') || norm.includes('booked cartons')) return 'carton_qty';
-    if (norm.includes('gross weight') || norm.includes('gross wt')) return 'gross_weight';
-    if (norm.includes('net weight') || norm.includes('net wt')) return 'net_weight';
-    if (norm.includes('cbm') || norm.includes('volume')) return 'cbm';
-    if (norm.includes('window end')) return 'window_end';
-    if (norm.includes('ecdd') || norm.includes('estimated cargo delivery') || norm.includes('cargo delivery date')) return 'ecdd';
-    if (norm === 'file') return 'file';
-    if (norm.includes('po status')) return 'po_status';
-    if (norm.includes('ship/vendor') || norm.includes('vendor code') || norm.includes('ship code')) return 'ship_code';
-    if (norm.includes('factory')) return 'factory';
-    if (norm === 'ship') return 'ship';
+    const exact = (alias: string): AliasMatch => ({ alias, exact: true });
+    const fuzzy = (alias: string): AliasMatch => ({ alias, exact: false });
 
+    if (norm === 'sl no' || norm === 'sl' || norm === 'serial number' || norm === 'sl. no' || norm === 'sl_no') return exact('sl');
+    if (BOOKING_EXACT.has(norm)) return exact('booking_number');
+    if (
+        (norm.includes('booking') || norm.includes('vob')) &&
+        (/\b(number|no|key|id)\b/.test(norm) || norm.includes('#')) &&
+        !/(date|status|created|unit|qty|quantity|other)/.test(norm)
+    ) return fuzzy('booking_number');
+    if (norm === 'working date') return exact('working_date');
+    if (norm.includes('working date')) return fuzzy('working_date');
+    if (norm === 'ship mode') return exact('ship_mode');
+    if (norm.includes('ship mode')) return fuzzy('ship_mode');
+    if (norm === 'freight type') return exact('freight_type');
+    if (norm.includes('freight type')) return fuzzy('freight_type');
+    if (norm === 'incoterms' || norm === 'incoterm') return exact('incoterms');
+    if (norm.includes('incoterm')) return fuzzy('incoterms');
+    if (norm === 'fob port' || norm === 'fob') return exact('fob_port');
+    if (norm.includes('fob port')) return fuzzy('fob_port');
+    if (norm === 'order type') return exact('order_type');
+    if (norm.includes('order type')) return fuzzy('order_type');
+    if (norm === 'po' || norm === 'po #' || norm === 'po no' || norm === 'po number') return exact('po');
+    if (norm === 'asin' || norm === 'asin #') return exact('asin');
+    if (norm.includes('asin') && !norm.includes('asin fc')) return fuzzy('asin');
+    if (norm === 'model' || norm === 'model #') return exact('model');
+    if (norm.includes('model')) return fuzzy('model');
+    if (norm === 'po qty' || norm === 'po quantity' || norm === 'booked units') return exact('po_quantity');
+    if (norm.includes('po qty') || norm.includes('po quantity') || norm.includes('booked units')) return fuzzy('po_quantity');
+    if (norm === 'case pack') return exact('case_pack');
+    if (norm.includes('case pack')) return fuzzy('case_pack');
+    if (norm === 'carton qty' || norm === 'booked cartons') return exact('carton_qty');
+    if (norm.includes('carton qty') || norm.includes('carton') || norm.includes('booked cartons')) return fuzzy('carton_qty');
+    if (norm === 'gross weight') return exact('gross_weight');
+    if (norm.includes('gross weight') || norm.includes('gross wt')) return fuzzy('gross_weight');
+    if (norm === 'net weight') return exact('net_weight');
+    if (norm.includes('net weight') || norm.includes('net wt')) return fuzzy('net_weight');
+    if (norm === 'cbm') return exact('cbm');
+    if (norm.includes('cbm') || norm.includes('volume')) return fuzzy('cbm');
+    if (norm === 'window end') return exact('window_end');
+    if (norm.includes('window end')) return fuzzy('window_end');
+    if (norm === 'ecdd') return exact('ecdd');
+    if (norm.includes('ecdd') || norm.includes('estimated cargo delivery') || norm.includes('cargo delivery date')) return fuzzy('ecdd');
+    if (norm === 'file') return exact('file');
+    if (norm === 'po status') return exact('po_status');
+    if (norm.includes('po status')) return fuzzy('po_status');
+    if (norm === 'ship/vendor code') return exact('ship_code');
+    if (norm.includes('ship/vendor') || norm.includes('vendor code') || norm.includes('ship code')) return fuzzy('ship_code');
+    if (norm === 'factory') return exact('factory');
+    if (norm.includes('factory')) return fuzzy('factory');
+    if (norm === 'ship') return exact('ship');
+
+    return null;
+}
+
+type HeaderScan = { rowNumber: number; headers: { [alias: string]: number } };
+
+/**
+ * Finds the header row of a sheet. A row qualifies when it has a booking-number
+ * column, or at least two recognised columns. Exact header names win over fuzzy
+ * ones; among equals the left-most column wins.
+ */
+function scanHeaders(sheet: Worksheet): HeaderScan | null {
+    const maxScanRows = Math.min(sheet.actualRowCount, MAX_HEADER_SCAN_ROWS);
+    for (let i = 1; i <= maxScanRows; i++) {
+        const matches: { [alias: string]: { col: number; exact: boolean } } = {};
+        sheet.getRow(i).eachCell({ includeEmpty: false }, (cell, colNumber) => {
+            const m = matchColumnAlias(getCellValueFromCell(cell));
+            if (!m) return;
+            const prev = matches[m.alias];
+            if (!prev || (m.exact && !prev.exact)) {
+                matches[m.alias] = { col: colNumber, exact: m.exact };
+            }
+        });
+        const aliases = Object.keys(matches);
+        if (matches['booking_number'] || aliases.length >= 2) {
+            const headers: { [alias: string]: number } = {};
+            for (const a of aliases) headers[a] = matches[a].col;
+            return { rowNumber: i, headers };
+        }
+    }
     return null;
 }
 
 export class DataManager {
     public readonly headers: { [alias: string]: number } = {};
+    /** Data rows that were skipped because they had no booking number. */
+    public skippedRows = 0;
     private readonly validRows:number[][]=[]
     private readonly workBook:Workbook
     private readonly src:Path.ParsedPath
@@ -101,120 +186,75 @@ export class DataManager {
     }
     async init(){
         await this.workBook.xlsx.readFile(Path.format(this.src))
-        // Find best matching worksheet (case-insensitive, trimmed)
-        let matchedSheet: Worksheet | undefined;
+
+        // Prefer sheets whose name looks like an upload/booking format, then all others.
+        const preferred: Worksheet[] = [];
+        const others: Worksheet[] = [];
         this.workBook.eachSheet((sheet) => {
             const name = sheet.name.trim().toLowerCase();
-            if (!matchedSheet && (name === 'format' || name.includes('format') || name.includes('booking') || name.includes('upload'))) {
-                matchedSheet = sheet;
+            if (name === 'format' || name.includes('format') || name.includes('booking') || name.includes('upload')) {
+                preferred.push(sheet);
+            } else {
+                others.push(sheet);
             }
         });
 
-        if (!matchedSheet) {
-            matchedSheet = this.workBook.getWorksheet(1);
+        // Use the first sheet that has a booking-number column.
+        for (const sheet of [...preferred, ...others]) {
+            const scan = scanHeaders(sheet);
+            if (scan && scan.headers['booking_number']) {
+                this.worksheet = sheet;
+                this.tableDataStartsAt = scan.rowNumber + 1;
+                Object.assign(this.headers, scan.headers);
+                break;
+            }
         }
 
-        this.worksheet = matchedSheet as Worksheet;
-        console.log(`[DataManager] Selected worksheet: "${this.worksheet.name}" (actualRowCount: ${this.worksheet.actualRowCount})`);
+        if (!this.worksheet) {
+            throw new DataManagerError(
+                "No 'Booking Number' column was found in the Excel file. Add a column named 'Booking Number' containing the Century VMS booking keys."
+            );
+        }
 
-        this.initHeaders();
+        console.log(`[DataManager] Selected worksheet: "${this.worksheet.name}", header row ${this.tableDataStartsAt - 1}`);
+        console.log("[DataManager] Detected Headers:", this.headers);
+
         this.listValidRows();
     }
 
-    initHeaders() {
-        const maxScanRows = Math.min(this.worksheet.actualRowCount, 30);
-        let foundHeader = false;
-
-        for (let i = 1; i <= maxScanRows; i++){
-            const row=this.worksheet.getRow(i)
-            let hasBookingCol = false;
-            let hasSlNo = false;
-            let matchCount = 0;
-
-            row.eachCell({ includeEmpty: false }, (cell) => {
-                const text = getCellValueFromCell(cell).toLowerCase();
-                const alias = matchColumnAlias(text);
-                if (alias === 'sl') hasSlNo = true;
-                if (alias === 'booking_number') hasBookingCol = true;
-                if (alias) matchCount++;
-            });
-
-            if (hasBookingCol || hasSlNo || matchCount >= 1) {
-                this.tableDataStartsAt=i+1
-                foundHeader = true;
-
-                row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-                    const rawText = getCellValueFromCell(cell);
-                    const colAlias = matchColumnAlias(rawText);
-                    if (colAlias) {
-                        this.headers[colAlias] = colNumber;
-                    }
-                })
-                break
-            }
-        }
-
-        console.log("[DataManager] Detected Headers:", this.headers);
-
-        if (!foundHeader || Object.keys(this.headers).length === 0) {
-            console.warn(`[DataManager] Warning: Header row could not be identified in sheet "${this.worksheet.name}". Inspecting row 1:`);
-            const row1 = this.worksheet.getRow(1);
-            row1.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-                console.log(`[DataManager]   Col ${colNumber}: "${getCellValueFromCell(cell)}"`);
-            });
-        }
-    }
-
+    /**
+     * Groups data rows by booking number across the whole sheet (first-seen order),
+     * so a booking that appears on non-adjacent rows is processed once.
+     */
     listValidRows() {
         const bookingCol = this.headers['booking_number'];
-        const poCol = this.headers['po'];
-        const modelCol = this.headers['model'];
+        const groups = new Map<string, number[]>();
+        let skipped = 0;
 
-        if (!bookingCol && (!poCol || !modelCol)) {
-            console.error("[DataManager] Critical: Neither 'Booking Number' nor 'PO'/'Model' column headers were found in the Excel sheet!");
-            return;
-        }
-
-        for (let i=this.tableDataStartsAt;i<=this.worksheet.actualRowCount;i++) {
-            const bookingNum=bookingCol ? getCellValueFromCell(this.worksheet.getCell(i, bookingCol)) : '';
-            const model=modelCol ? getCellValueFromCell(this.worksheet.getCell(i, modelCol)) : '';
-            const po=poCol ? getCellValueFromCell(this.worksheet.getCell(i, poCol)) : '';
-
-            if (!isEmpty(bookingNum) || (!isEmpty(model) && !isEmpty(po))) {
-                const groupRows: number[] = [i];
-
-                while (i + 1 <= this.worksheet.actualRowCount) {
-                    try {
-                        const nextBooking = bookingCol ? getCellValueFromCell(this.worksheet.getCell(i + 1, bookingCol)) : '';
-                        const nextModel = modelCol ? getCellValueFromCell(this.worksheet.getCell(i + 1, modelCol)) : '';
-                        const nextPO = poCol ? getCellValueFromCell(this.worksheet.getCell(i + 1, poCol)) : '';
-
-                        if (bookingCol && !isEmpty(bookingNum)) {
-                            if (!isEmpty(nextBooking) && nextBooking.trim().toLowerCase() === bookingNum.trim().toLowerCase()) {
-                                i++;
-                                groupRows.push(i);
-                            } else {
-                                break;
-                            }
-                        } else {
-                            if (!isEmpty(nextModel) && nextModel.trim().toLowerCase() === model.trim().toLowerCase() && nextPO.trim().toLowerCase() === po.trim().toLowerCase()) {
-                                i++;
-                                groupRows.push(i);
-                            } else {
-                                break;
-                            }
-                        }
-                    } catch (error) {
-                        break
-                    }
-                }
-                if(groupRows.length>0){
-                    this.validRows.push(groupRows)
-                }
+        for (let i = this.tableDataStartsAt; i <= this.worksheet.actualRowCount; i++) {
+            const bookingNum = getCellValueFromCell(this.worksheet.getCell(i, bookingCol)).trim();
+            // Formula placeholders such as "0" or "-" are not booking numbers.
+            if (isEmpty(bookingNum) || /^[0\-\s.]+$/.test(bookingNum)) {
+                if (this.rowHasData(i)) skipped++;
+                continue;
             }
-           
+            const key = bookingNum.toUpperCase();
+            const group = groups.get(key);
+            if (group) group.push(i);
+            else groups.set(key, [i]);
         }
-        // console.log(this.validRows)
+
+        this.validRows.push(...groups.values());
+        this.skippedRows = skipped;
+        console.log(`[DataManager] ${this.validRows.length} booking group(s), ${skipped} row(s) without booking number skipped.`);
+    }
+
+    private rowHasData(row: number): boolean {
+        for (const key in this.headers) {
+            if (key === 'sl') continue;
+            if (!isEmpty(getCellValueFromCell(this.worksheet.getCell(row, this.headers[key])))) return true;
+        }
+        return false;
     }
 
     private _getData(row:number):IDataFormExcel{
@@ -223,7 +263,7 @@ export class DataManager {
             const colIndex = this.headers[key];
             if (!colIndex) continue;
             const cell = this.worksheet.getCell(row, colIndex);
-            rowObj[key] = getCellValueFromCell(cell);
+            rowObj[key] = getCellValueFromCell(cell, DATE_COLUMNS.has(key));
         }
         return rowObj as IDataFormExcel;
     }
@@ -275,6 +315,7 @@ export class DataManager {
 
 export class MemoryDataManager {
     public readonly headers: { [alias: string]: number } = { booking_number: 1 };
+    public skippedRows = 0;
     private readonly groups: IDataFormExcel[][] = [];
     private currentIndex = 0;
 
@@ -288,7 +329,8 @@ export class MemoryDataManager {
 
             const compCd = typeof item === 'object' ? (item.comp_cd || defaultCompanyCode || '') : (defaultCompanyCode || '');
             const vendorCd = typeof item === 'object' ? (item.vendor_cd || '') : '';
-            const po = typeof item === 'object' ? (item.po || bookingNumber) : bookingNumber;
+            // PO is unknown for selected bookings unless explicitly given; it is detected from the PO items later.
+            const po = typeof item === 'object' ? (item.po || '').trim() : '';
             const status = typeof item === 'object' ? (item.status || '') : '';
 
             const rowObj: any = {
