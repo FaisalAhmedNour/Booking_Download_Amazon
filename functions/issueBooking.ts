@@ -2,6 +2,7 @@ import { AppCreator } from "../utils/App";
 import { isEmpty, sleep } from "../utils/common";
 import { CenturyAPIProvider } from "../utils/century.api.provider";
 import { VmsStatusStore } from "../utils/vmsStatusStore";
+import { CombinedPoItemsWriter } from "../utils/combinedPoItemsWriter";
 import { IDataFormExcel } from "../utils/types";
 import { Page } from "puppeteer-core";
 import { Workbook } from "exceljs";
@@ -273,25 +274,38 @@ function getItemPo(itemRow: any): string {
     return '';
 }
 
+async function isPoItemTabActive(app: AppCreator): Promise<boolean> {
+    return app.Page.evaluate(() => {
+        const el = document.querySelector('li[id="#VobItemDetail"]');
+        return !!el && /\bactive\b/.test(el.className);
+    }).catch(() => false);
+}
+
 async function openPoItemTab(app: AppCreator) {
-    try {
-        await app.Page.waitForSelector('li[id="#VobItemDetail"]', { timeout: 8_000 });
-        const tabEl = await app.Page.$('li[id="#VobItemDetail"]');
-        if (tabEl) {
-            await tabEl.click();
-        } else {
+    // The workspace keeps re-rendering for a moment after the booking header appears;
+    // a click made too early is lost and the page stays on "Booking Header".
+    await sleep(2_000);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            await app.Page.waitForSelector('li[id="#VobItemDetail"]', { timeout: 8_000 });
+            const tabEl = await app.Page.$('li[id="#VobItemDetail"]');
+            if (tabEl) {
+                await tabEl.click();
+            } else {
+                throw new Error('PO Items tab not found');
+            }
+        } catch {
             await app.Page.evaluate(() => {
-                const el = document.querySelector('li[id="#VobItemDetail"]') as HTMLElement;
-                if (el) el.click();
-            });
+                const li = document.querySelector('li[id="#VobItemDetail"]');
+                const target = (li?.querySelector('a') || li) as HTMLElement | null;
+                if (target) target.click();
+            }).catch(() => null);
         }
-    } catch {
-        await app.Page.evaluate(() => {
-            const el = document.querySelector('li[id="#VobItemDetail"]') as HTMLElement;
-            if (el) el.click();
-        }).catch(() => null);
+        await sleep(1500);
+        if (await isPoItemTabActive(app)) break;
+        console.log(`[downloadPoItemFile] PO Items tab did not open (attempt ${attempt}), retrying...`);
+        await sleep(1500);
     }
-    await sleep(1500);
 
     // Wait for grid rows to render or loading spinner to finish
     try {
@@ -316,21 +330,21 @@ async function extractViaExportButton(app: AppCreator, downloadDir: string): Pro
             downloadPath: downloadDir
         });
 
-        // Only visible buttons inside a visible grid (the PO Item tab); never "Download Template".
+        // The PO grid's Export button sits in its panel header (#VobItemDetailGrid_componentHeader),
+        // not inside grid-component. Only visible buttons; never "Download Template".
         const exportBtnHandle = await app.Page.evaluateHandle(() => {
             const isVisible = (el: Element) => (el as HTMLElement).offsetParent !== null;
-            const grids = Array.from(document.querySelectorAll('grid-component')).filter(isVisible);
-            for (const grid of grids) {
-                const btn = Array.from(grid.querySelectorAll('button')).filter(isVisible).find(b => {
-                    const title = (b.getAttribute('title') || '').toLowerCase();
-                    const text = (b.textContent || '').toLowerCase();
-                    const isExport = title.includes('export') || text.includes('export') || title.includes('excel') || text.includes('excel');
-                    const isTemplate = title.includes('template') || text.includes('template');
-                    return isExport && !isTemplate;
-                });
-                if (btn) return btn;
-            }
-            return null;
+            const isExportButton = (b: Element) => {
+                const title = (b.getAttribute('title') || '').toLowerCase();
+                const text = (b.textContent || '').toLowerCase();
+                const isExport = title.includes('export') || text.includes('export') || title.includes('excel') || text.includes('excel');
+                const isTemplate = title.includes('template') || text.includes('template');
+                return isExport && !isTemplate;
+            };
+            const poItemButtons = Array.from(document.querySelectorAll('[id^="VobItemDetail"] button'));
+            return poItemButtons.filter(isVisible).find(isExportButton)
+                || Array.from(document.querySelectorAll('button')).filter(isVisible).find(isExportButton)
+                || null;
         });
 
         const exportButton = exportBtnHandle.asElement() as any;
@@ -377,9 +391,11 @@ async function extractViaExportButton(app: AppCreator, downloadDir: string): Pro
 /** 3. Calls the SearchBookingItem API from inside the logged-in page. */
 async function extractViaPageFetch(app: AppCreator, bookingKey: string): Promise<any[] | null> {
     const apiItems = await app.Page.evaluate(async (bKey) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30_000);
         try {
             const url = `/api/Vob/Vob/SearchBookingItem?formId=1000015&whereClause=%7B%7D&bookingKey=${encodeURIComponent(bKey)}&isLoadSizeData=false`;
-            const res = await fetch(url, { credentials: 'include' });
+            const res = await fetch(url, { credentials: 'include', signal: controller.signal });
             if (!res.ok) return null;
             const json = await res.json();
             if (Array.isArray(json)) return json;
@@ -389,6 +405,8 @@ async function extractViaPageFetch(app: AppCreator, bookingKey: string): Promise
             return null;
         } catch {
             return null;
+        } finally {
+            clearTimeout(timer);
         }
     }, bookingKey).catch(() => null);
     return Array.isArray(apiItems) && apiItems.length > 0 ? apiItems : null;
@@ -472,6 +490,11 @@ async function downloadPoItemFile(
         rows = await extractViaExportButton(app, downloadDir);
         if (rows) source = 'export';
 
+        if (!rows) {
+            rows = await extractViaGridApi(app);
+            if (rows) source = 'grid-api';
+        }
+
         if (!rows && vmaApiProvider) {
             try {
                 const apiRes = await vmaApiProvider.getAllBookingItems(bookingKey);
@@ -487,11 +510,6 @@ async function downloadPoItemFile(
         if (!rows) {
             rows = await extractViaPageFetch(app, bookingKey);
             if (rows) source = 'page-fetch';
-        }
-
-        if (!rows) {
-            rows = await extractViaGridApi(app);
-            if (rows) source = 'grid-api';
         }
 
         if (!rows) {
@@ -613,12 +631,49 @@ export default async function issueBooking(app: AppCreator) {
 
     console.log(`[issueBooking] Download Settings -> POItems: ${downloadPoItems}, Combine: ${combinePoItems}, KeepIndividual: ${keepIndividualFiles}, PDF: ${downloadPdf}, Dir: "${downloadDir}"`);
 
-    // Master accumulator for combined PO Items across all bookings
-    const combinedPoRows: any[] = [];
-    const masterHeadersSet = new Set<string>(['Booking Number', 'PO Number']);
-    let combinedBookingsCount = 0;
+    // Combined PO items file: rewritten after every booking so a stopped/killed run
+    // still leaves a complete file with everything downloaded so far.
+    const combinedWriter = (downloadPoItems && combinePoItems) ? new CombinedPoItemsWriter(downloadDir) : null;
+    let combinedAnnounced = false;
+    let combinedLockWarned = false;
+    let combinedErrorWarned = false;
+    const saveCombinedFile = async () => {
+        if (!combinedWriter || combinedWriter.rowCount === 0) return;
+        const res = combinedWriter.save();
+        if (res.ok) {
+            if (!combinedAnnounced) {
+                combinedAnnounced = true;
+                await app.LocalCom.sendData(undefined, [{
+                    channel: app.LocalCom.progress.channel,
+                    type: 'n',
+                    title: 'Combined Excel File',
+                    message: `The combined PO Items file is updated after each booking:\n${res.filePath}`
+                }]);
+            }
+            return;
+        }
+        console.warn(`[issueBooking] Combined file save failed (${res.locked ? 'locked' : 'error'}): ${res.error}`);
+        if (res.locked && !combinedLockWarned) {
+            combinedLockWarned = true;
+            await app.LocalCom.sendData(undefined, [{
+                channel: app.LocalCom.progress.channel,
+                type: 'w',
+                title: 'Combined File Is Open',
+                message: `Close "${combinedWriter.fileName}" in Excel; it will be updated after the next booking.`
+            }]);
+        } else if (!res.locked && !combinedErrorWarned) {
+            combinedErrorWarned = true;
+            await app.LocalCom.sendData(undefined, [{
+                channel: app.LocalCom.progress.channel,
+                type: 'w',
+                title: 'Combined File Warning',
+                message: `Could not update the combined Excel file: ${res.error}. Will retry after the next booking.`
+            }]);
+        }
+    };
     // Where PO item rows came from; different sources use different column names.
     const poItemSources = new Set<PoItemSource>();
+    let stoppedEarly = false;
 
     app.LocalCom.progress.setTitleAndMessage('Booking Download', 'Downloading booking files from Century VMS.');
     app.LocalCom.sendData();
@@ -643,6 +698,9 @@ export default async function issueBooking(app: AppCreator) {
             po_item_file: undefined,
             pdf_file: undefined,
         };
+        // For the combined file's 'Bookings' sheet
+        let bookingPoItemRows = 0;
+        let bookingPoItemSource: PoItemSource | undefined;
 
         try {
             const _data = app.dateManager.getData();
@@ -707,28 +765,24 @@ export default async function issueBooking(app: AppCreator) {
                             downloadResults.push(`Warning: PO items read from the screen, may be incomplete`);
                         }
                         if (poItemRes.source) poItemSources.add(poItemRes.source);
+                        bookingPoItemSource = poItemRes.source;
 
                         if (Array.isArray(poItemRes.rows) && poItemRes.rows.length > 0) {
+                            bookingPoItemRows = poItemRes.rows.length;
                             // POs actually present on the booking (a booking can hold several POs).
                             const bookingPos = Array.from(new Set(poItemRes.rows.map(getItemPo).filter(Boolean)));
                             if (!poNumber && bookingPos.length > 0) {
                                 firstRow.po = bookingPos.join(', ');
                             }
 
-                            if (combinePoItems) {
-                                combinedBookingsCount++;
-                                for (const itemRow of poItemRes.rows) {
-                                    // Each item row keeps its own PO; the Excel PO is only a fallback.
-                                    const rowPo = getItemPo(itemRow) || poNumber;
-                                    const rowObj: any = {
-                                        'Booking Number': liveBookingKey,
-                                        'PO Number': rowPo,
-                                        ...itemRow
-                                    };
-                                    Object.keys(rowObj).forEach(k => masterHeadersSet.add(k));
-                                    combinedPoRows.push(rowObj);
-                                }
-                                console.log(`[issueBooking] Accumulated ${poItemRes.rows.length} PO Item rows for Booking: ${liveBookingKey} (Total so far: ${combinedPoRows.length})`);
+                            if (combinedWriter) {
+                                // Each item row keeps its own PO; the Excel PO is only a fallback.
+                                combinedWriter.addPoItemRows(poItemRes.rows.map((itemRow: any) => ({
+                                    'Booking Number': liveBookingKey,
+                                    'PO Number': getItemPo(itemRow) || poNumber,
+                                    ...itemRow
+                                })));
+                                console.log(`[issueBooking] Accumulated ${poItemRes.rows.length} PO Item rows for Booking: ${liveBookingKey} (Total so far: ${combinedWriter.rowCount})`);
                             }
                         }
                     } else {
@@ -834,7 +888,24 @@ export default async function issueBooking(app: AppCreator) {
                 });
             }
 
+            // Write the combined file now, so it is complete up to this booking even if the run is killed.
+            if (combinedWriter) {
+                const bookingKeyForSheet = data.booking_number || (data.data?.[0]?.po ? `(PO ${data.data[0].po})` : '');
+                if (bookingKeyForSheet) {
+                    combinedWriter.recordBooking({
+                        bookingKey: bookingKeyForSheet,
+                        po: data.data?.[0]?.po,
+                        success: data.Success,
+                        poItemRows: bookingPoItemRows,
+                        source: bookingPoItemSource,
+                        message: data.Message,
+                    });
+                }
+                await saveCombinedFile();
+            }
+
             if (!resp.continue) {
+                stoppedEarly = true;
                 app.LocalCom.progress.setTitleAndMessage("Stopped.", resp.message);
                 await app.LocalCom.sendData(undefined, [
                     {
@@ -858,62 +929,39 @@ export default async function issueBooking(app: AppCreator) {
         console.warn('[issueBooking] Failed to flush progress buffer:', flushErr);
     }
 
-    // 5. Generate Single Combined Excel File if requested
-    if (combinePoItems) {
-        if (combinedPoRows.length > 0) {
-            try {
-                if (!fs.existsSync(downloadDir)) {
-                    fs.mkdirSync(downloadDir, { recursive: true });
-                }
-
-                const now = new Date();
-                const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-                const combinedFileName = `Combined_PO_Items_${dateStr}.xlsx`;
-                const combinedFilePath = path.join(downloadDir, combinedFileName);
-
-                const headersList = Array.from(masterHeadersSet);
-                const ws = XLSX.utils.json_to_sheet(combinedPoRows, { header: headersList });
-
-                // Auto-calculate column widths
-                const colWidths = headersList.map(h => {
-                    let max = h.length;
-                    const sampleRows = combinedPoRows.slice(0, 100);
-                    for (const r of sampleRows) {
-                        const valLen = String(r[h] ?? '').length;
-                        if (valLen > max) max = valLen;
-                    }
-                    return { wch: Math.min(Math.max(max + 3, 12), 40) };
-                });
-                ws['!cols'] = colWidths;
-
-                const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, 'All PO Items');
-                writeWorkbookSafely(wb, combinedFilePath);
-
-                console.log(`[issueBooking] Successfully generated single combined PO Items file: ${combinedFilePath} (${combinedPoRows.length} rows across ${combinedBookingsCount} bookings)`);
-
+    // 5. Final save of the combined Excel file (it was already updated after each booking)
+    if (combinedWriter) {
+        if (combinedWriter.rowCount > 0) {
+            const res = combinedWriter.saveFinal();
+            const totalBookings = app.dateManager.length;
+            const included = combinedWriter.bookingsWithItems;
+            if (res.ok) {
+                console.log(`[issueBooking] Combined PO Items file saved: ${res.filePath} (${combinedWriter.rowCount} rows across ${included} bookings)`);
                 await app.LocalCom.sendData(undefined, [{
                     channel: app.LocalCom.progress.channel,
                     type: 'n',
                     title: 'Combined Excel File Created',
-                    message: `Combined ${combinedPoRows.length} PO Item row(s) from ${combinedBookingsCount} booking(s) into single file:\n${combinedFileName}`
+                    message: `Combined ${combinedWriter.rowCount} PO Item row(s) from ${included} booking(s)` +
+                        (stoppedEarly ? ` (run stopped early; ${totalBookings} booking(s) were selected)` : '') +
+                        ` into single file:\n${res.filePath}`
                 }]);
-
-                if (poItemSources.size > 1) {
-                    await app.LocalCom.sendData(undefined, [{
-                        channel: app.LocalCom.progress.channel,
-                        type: 'w',
-                        title: 'Mixed PO Item Sources',
-                        message: `PO items were read in different ways (${Array.from(poItemSources).join(', ')}), so the combined file may contain differently named columns for some bookings.`
-                    }]);
-                }
-            } catch (combErr) {
-                console.error('[issueBooking] Error writing combined Excel file:', combErr);
+            } else {
+                console.error('[issueBooking] Error writing combined Excel file:', res.error);
                 await app.LocalCom.sendData(undefined, [{
                     channel: app.LocalCom.progress.channel,
                     type: 'w',
                     title: 'Combined File Warning',
-                    message: `Failed to create combined Excel file: ${combErr instanceof Error ? combErr.message : String(combErr)}`
+                    message: `Failed to save the combined Excel file: ${res.error}` +
+                        (combinedAnnounced ? `\nThe last saved version is in:\n${combinedWriter.filePath}` : '')
+                }]);
+            }
+
+            if (poItemSources.size > 1) {
+                await app.LocalCom.sendData(undefined, [{
+                    channel: app.LocalCom.progress.channel,
+                    type: 'w',
+                    title: 'Mixed PO Item Sources',
+                    message: `PO items were read in different ways (${Array.from(poItemSources).join(', ')}), so the combined file may contain differently named columns for some bookings.`
                 }]);
             }
         } else {
