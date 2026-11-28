@@ -264,6 +264,23 @@ export class AppCreator{
                 page = pages.length > 0 ? pages[0] : await browser.newPage();
                 await page.setViewport({ width: 1366, height: 768 });
 
+                // tsx (used by the npm test:* scripts) wraps functions in a __name() helper that
+                // does not exist inside the browser, which breaks page.evaluate callbacks with
+                // inner functions. Define a no-op __name in every page; harmless in the built app.
+                const nameShim = 'globalThis.__name = globalThis.__name || function (fn) { return fn; };';
+                const addNameShim = async (p: Page) => {
+                    try {
+                        await p.evaluateOnNewDocument(nameShim);
+                        await p.evaluate(nameShim);
+                    } catch { /* page closed or not ready; the new-document hook still applies */ }
+                };
+                await addNameShim(page);
+                browser.on('targetcreated', async (target) => {
+                    if (target.type() !== 'page') return;
+                    const p = await target.page().catch(() => null);
+                    if (p) await addNameShim(p);
+                });
+
                 console.log(`Connected to Edge on port ${port}`);
                 this.Browser=browser
                 this.Page=page

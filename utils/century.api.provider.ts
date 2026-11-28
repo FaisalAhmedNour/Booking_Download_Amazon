@@ -688,6 +688,15 @@ export interface IUploadCSVResult {
     raw?: any;
 }
 
+/**
+ * Century VMS's web app sends the open page's URL parameters as JSON in a "QueryParams" header
+ * on every API call, and some calls (e.g. GetItemDetail) fail without it ("Value cannot be null.
+ * Parameter name: s"). This builds the header the booking page (VobWorkspace) would send.
+ */
+function vobWorkspaceQueryParams(bookingKey:string,compCd:string):string{
+    return JSON.stringify({modulecd:"Vob",configName:"VobWorkspace",bookingKey,compCd});
+}
+
 export class CenturyAPIProvider{
     protected instance:AxiosInstance
     protected hanoverPoints:IHandOverPoint[]|undefined;
@@ -740,6 +749,86 @@ export class CenturyAPIProvider{
         } catch (error:any) {
             const errorMsg=error?.response?.data?.Message||error?.response?.data?.message||(error instanceof Error?error.message:String(error));
             return {found:false,message:errorMsg};
+        }
+    }
+    /** Raw page layout config (grid/column definitions) of a Century VMS page, e.g. Vob/VobWorkspace. */
+    async getPageLayoutConfig(moduleCd:string,configName:string):Promise<{success:boolean;data?:any;message?:string}>{
+        try {
+            const url=`/ple/PageLayout/GetByConfigName?moduleCd=${encodeURIComponent(moduleCd)}&configName=${encodeURIComponent(configName)}&applicationName=Vms`;
+            const resp=await this.instance.get(url,{
+                timeout:30_000,
+                headers:{
+                    Origin:"https://www.centuryvms.com",
+                    Referer:"https://www.centuryvms.com/"
+                }
+            });
+            if(resp?.status===200&&resp.data){
+                return {success:true,data:resp.data};
+            }
+            return {success:false,message:`GetByConfigName returned status ${resp?.status}`};
+        } catch (error:any) {
+            const errorMsg=error?.response?.data?.Message||error?.response?.data?.message||(error instanceof Error?error.message:String(error));
+            return {success:false,message:errorMsg};
+        }
+    }
+    /**
+     * All PO item rows of a booking, exactly as the PO Items grid loads them
+     * (the same call the booking page makes). Not paginated: every row comes back at once.
+     */
+    async getItemDetail(bookingKey:string,compCd:string):Promise<{success:boolean;rows?:any[];message?:string}>{
+        try {
+            const url=`/Vob/Vob/GetItemDetail?modulecd=Vob&configName=VobWorkspace&bookingKey=${encodeURIComponent(bookingKey)}&compCd=${encodeURIComponent(compCd)}`;
+            const resp=await this.instance.get(url,{
+                timeout:60_000,
+                headers:{
+                    Origin:"https://www.centuryvms.com",
+                    Referer:"https://www.centuryvms.com/",
+                    QueryParams:vobWorkspaceQueryParams(bookingKey,compCd)
+                }
+            });
+            const resData=resp?.data;
+            if(resp?.status!==200||!resData){
+                return {success:false,message:`GetItemDetail returned status ${resp?.status}`};
+            }
+            if(resData.Succeeded===false){
+                return {success:false,message:resData.Message||"GetItemDetail failed in Century VMS."};
+            }
+            if(!Array.isArray(resData.GridDataTable)){
+                return {success:false,message:"GetItemDetail response has no item table."};
+            }
+            return {success:true,rows:resData.GridDataTable};
+        } catch (error:any) {
+            const errorMsg=error?.response?.data?.Message||error?.response?.data?.message||(error instanceof Error?error.message:String(error));
+            return {success:false,message:errorMsg};
+        }
+    }
+    /** The booking's header (status, dates, vendor...), as the Booking Header tab loads it. */
+    async getBookingHeader(bookingKey:string,compCd:string):Promise<{success:boolean;header?:any;message?:string}>{
+        try {
+            const url=`/Vob/Vob/GetBookingHeader?modulecd=Vob&configName=VobWorkspace&bookingKey=${encodeURIComponent(bookingKey)}&compCd=${encodeURIComponent(compCd)}`;
+            const resp=await this.instance.get(url,{
+                timeout:30_000,
+                headers:{
+                    Origin:"https://www.centuryvms.com",
+                    Referer:"https://www.centuryvms.com/",
+                    QueryParams:vobWorkspaceQueryParams(bookingKey,compCd)
+                }
+            });
+            const resData=resp?.data;
+            if(resp?.status!==200||!resData){
+                return {success:false,message:`GetBookingHeader returned status ${resp?.status}`};
+            }
+            if(resData.Succeeded===false){
+                return {success:false,message:resData.Message||"GetBookingHeader failed in Century VMS."};
+            }
+            const header=Array.isArray(resData.FormDataTable)?resData.FormDataTable[0]:undefined;
+            if(!header){
+                return {success:false,message:"Century VMS returned no booking header."};
+            }
+            return {success:true,header};
+        } catch (error:any) {
+            const errorMsg=error?.response?.data?.Message||error?.response?.data?.message||(error instanceof Error?error.message:String(error));
+            return {success:false,message:errorMsg};
         }
     }
     async getAllBookingItems(bookingKey:string):Promise<{found:boolean;message?:string;data?:any[]}>{

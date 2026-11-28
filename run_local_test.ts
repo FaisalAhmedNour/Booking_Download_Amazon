@@ -2,6 +2,7 @@ import { AppCreator } from './utils/App';
 import { login } from './functions/login';
 import issueBooking from './functions/issueBooking';
 import pullBookingStatus from './functions/pullBookingStatus';
+import comparePoItemsApi from './functions/comparePoItemsApi';
 import { DataManager, MemoryDataManager } from './utils/DataManager';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -22,13 +23,17 @@ if (fs.existsSync(configPath)) {
 async function runLocalTest() {
     const isPullStatus = process.argv.includes('--pull-status') || config.initData?.mode === 'pull_status';
     const bookingsArg = process.argv.find(arg => arg.startsWith('--bookings='));
-    const isDownloadSelected = process.argv.includes('--download-selected') || Boolean(bookingsArg) || config.initData?.mode === 'download_selected';
+    // Compares PO items from the grid export with the SearchBookingItem API (uses --bookings= or the config's bookings).
+    const isCompareApi = process.argv.includes('--compare-api');
+    const isDownloadSelected = isCompareApi || process.argv.includes('--download-selected') || Boolean(bookingsArg) || config.initData?.mode === 'download_selected';
     const statusArgMatch = process.argv.find(arg => arg.startsWith('--status='));
     const targetStatus = statusArgMatch ? statusArgMatch.split('=')[1] : (config.initData?.settings?.status || 'Draft');
 
     console.log('==================================================');
     if (isPullStatus) {
         console.log('🚀 Starting Century VMS Online Booking Status Pull Test');
+    } else if (isCompareApi) {
+        console.log('🚀 Starting PO Items API vs Export Comparison');
     } else if (isDownloadSelected) {
         console.log('🚀 Starting Century VMS Selected Booking Download Test');
     } else {
@@ -44,8 +49,19 @@ async function runLocalTest() {
 
     if (isDownloadSelected) {
         if (bookingsArg) {
-            const rawKeys = bookingsArg.split('=')[1].split(',');
-            selectedBookings = rawKeys.map(k => ({ booking_number: k.trim(), comp_cd: '589' }));
+            // PowerShell/npm may split "A,B,C" into separate arguments; take the plain
+            // arguments that follow --bookings= as well.
+            const argIndex = process.argv.indexOf(bookingsArg);
+            const following: string[] = [];
+            for (const a of process.argv.slice(argIndex + 1)) {
+                if (a.startsWith('--')) break;
+                following.push(a);
+            }
+            const rawKeys = [bookingsArg.split('=')[1] || '', ...following]
+                .flatMap(v => v.split(/[,\s]+/))
+                .map(k => k.trim())
+                .filter(Boolean);
+            selectedBookings = rawKeys.map(k => ({ booking_number: k, comp_cd: '589' }));
         } else if (config.initData?.bookings && Array.isArray(config.initData.bookings)) {
             selectedBookings = config.initData.bookings;
         } else if (config.initData?.bookingNumbers && Array.isArray(config.initData.bookingNumbers)) {
@@ -249,6 +265,10 @@ async function runLocalTest() {
         console.log('✅ Login successful! Starting online booking status pull...');
         await pullBookingStatus(app);
         console.log('🎉 Status pull completed successfully.');
+    } else if (isCompareApi) {
+        console.log('✅ Login successful! Comparing PO items: export vs API...');
+        await comparePoItemsApi(app, selectedBookings.map(b => String(b.booking_number || '').trim()).filter(Boolean));
+        console.log('🎉 Comparison finished.');
     } else {
         console.log('✅ Login successful! Starting booking files download...');
         await issueBooking(app);

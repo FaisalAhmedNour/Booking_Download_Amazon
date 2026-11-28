@@ -6,7 +6,26 @@ import * as path from "path";
 const FIXED_HEADERS = ['Booking Number', 'PO Number'];
 const ITEMS_SHEET = 'All PO Items';
 const BOOKINGS_SHEET = 'Bookings';
-const BOOKINGS_HEADERS = ['SL', 'Booking Number', 'PO', 'Result', 'PO Item Rows', 'Source', 'Message', 'Processed At'];
+const BOOKINGS_HEADERS = ['SL', 'Booking Number', 'PO', 'Result', 'PO Item Rows', 'PO Items Source', 'Message', 'Processed At'];
+/** Date format of the date columns in Century VMS's own PO Items export. */
+export const PO_ITEM_DATE_FORMAT = 'm/d/yy';
+
+/**
+ * Shows the given columns' Excel date numbers (e.g. 46344) as dates (11/18/26), as Century VMS's
+ * own export does. Only numeric cells below the header row are changed.
+ */
+export function formatDateColumns(ws: XLSX.WorkSheet, dateHeaders: readonly string[]): void {
+    if (!ws['!ref'] || dateHeaders.length === 0) return;
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let c = range.s.c; c <= range.e.c; c++) {
+        const head = ws[XLSX.utils.encode_cell({ r: range.s.r, c })];
+        if (!head || !dateHeaders.includes(String(head.v))) continue;
+        for (let r = range.s.r + 1; r <= range.e.r; r++) {
+            const cell = ws[XLSX.utils.encode_cell({ r, c })];
+            if (cell && cell.t === 'n') cell.z = PO_ITEM_DATE_FORMAT;
+        }
+    }
+}
 
 export type CombinedSaveResult = {
     ok: boolean;
@@ -21,6 +40,7 @@ export type BookingResult = {
     po?: string;
     success: boolean;
     poItemRows: number;
+    /** Where the rows came from: the Century API or the grid export (with its file name). */
     source?: string;
     message?: string;
 };
@@ -49,9 +69,12 @@ export class CombinedPoItemsWriter {
     private readonly rows: Record<string, unknown>[] = [];
     private readonly headers = new Set<string>(FIXED_HEADERS);
     private readonly bookings = new Map<string, BookingResult & { processedAt: Date }>();
+    private readonly dateHeaders: readonly string[];
 
-    constructor(downloadDir: string, now: Date = new Date()) {
+    /** `dateHeaders`: PO item columns holding Excel date numbers, shown as dates. */
+    constructor(downloadDir: string, now: Date = new Date(), dateHeaders: readonly string[] = []) {
         this.dir = downloadDir;
+        this.dateHeaders = dateHeaders;
         this.baseName = `Combined_PO_Items_${timestamp(now)}`;
         this.currentPath = path.join(this.dir, `${this.baseName}.xlsx`);
     }
@@ -96,6 +119,7 @@ export class CombinedPoItemsWriter {
 
         const headersList = Array.from(this.headers);
         const itemsSheet = XLSX.utils.json_to_sheet(this.rows, { header: headersList });
+        formatDateColumns(itemsSheet, this.dateHeaders);
         const sample = this.rows.slice(0, 100);
         itemsSheet['!cols'] = headersList.map(h => {
             let max = h.length;
@@ -113,12 +137,12 @@ export class CombinedPoItemsWriter {
             'PO': b.po || '',
             'Result': b.success ? 'Success' : 'Failed',
             'PO Item Rows': b.poItemRows,
-            'Source': b.source || '',
+            'PO Items Source': b.source || '',
             'Message': b.message || '',
             'Processed At': b.processedAt.toLocaleString(),
         }));
         const bookingsSheet = XLSX.utils.json_to_sheet(bookingRows, { header: BOOKINGS_HEADERS });
-        bookingsSheet['!cols'] = [{ wch: 5 }, { wch: 20 }, { wch: 24 }, { wch: 9 }, { wch: 13 }, { wch: 11 }, { wch: 60 }, { wch: 22 }];
+        bookingsSheet['!cols'] = [{ wch: 5 }, { wch: 20 }, { wch: 24 }, { wch: 9 }, { wch: 13 }, { wch: 40 }, { wch: 60 }, { wch: 22 }];
         XLSX.utils.book_append_sheet(wb, bookingsSheet, BOOKINGS_SHEET);
 
         return wb;
