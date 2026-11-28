@@ -8,6 +8,7 @@
     "test:local": "npx tsx run_local_test.ts",
     "test:status": "npx tsx run_local_test.ts --pull-status",
     "test:download": "npx tsx run_local_test.ts --download-selected",
+    "test:compare-api": "npx tsx run_local_test.ts --compare-api",
     "compile": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "mini": "webpack --config webpack.config.js",
